@@ -34,10 +34,20 @@ CHECKPOINT_VERSION = 3
 # ── Replay Buffer ─────────────────────────────────────────────────────────────
 
 class ReplayBuffer:
+    """
+    ``teacher_action`` is ``None`` for ordinary self-play transitions. It
+    exists to support a generic DQfD-style large-margin auxiliary term in
+    DDQNAgent.update() (default weight 0.0, i.e. off) for demo transitions
+    from a *compliant* source only -- competition rules forbid training on
+    ASU's output (opponent play against ASU is fine, cloning it is not).
+    When active, it is a supervised auxiliary term, not a second Bellman
+    target, so it never changes what a transition's reward/next_state mean.
+    """
+
     def __init__(self, capacity: int = 10_000):
         self.buffer = deque(maxlen=capacity)
 
-    def push(self, state, action, reward, next_state, done, next_allowed):
+    def push(self, state, action, reward, next_state, done, next_allowed, teacher_action=None):
         self.buffer.append(
             (
                 np.asarray(state, dtype=np.float32).copy(),
@@ -46,12 +56,13 @@ class ReplayBuffer:
                 np.asarray(next_state, dtype=np.float32).copy(),
                 bool(done),
                 tuple(int(a) for a in next_allowed),
+                None if teacher_action is None else int(teacher_action),
             )
         )
 
     def sample(self, batch_size: int):
         batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones, next_allowed = zip(*batch)
+        states, actions, rewards, next_states, dones, next_allowed, teacher_actions = zip(*batch)
         return (
             torch.FloatTensor(np.array(states)),
             torch.LongTensor(actions),
@@ -59,6 +70,7 @@ class ReplayBuffer:
             torch.FloatTensor(np.array(next_states)),
             torch.FloatTensor(dones),
             next_allowed,
+            teacher_actions,
         )
 
     def state_dict(self) -> dict:
@@ -81,19 +93,22 @@ class ReplayBuffer:
             "next_states": torch.from_numpy(next_states),
             "dones": torch.tensor([x[4] for x in items], dtype=torch.bool),
             "next_allowed": [list(x[5]) for x in items],
+            "teacher_actions": [x[6] for x in items],
         }
 
     def load_state_dict(self, payload: dict) -> None:
         self.buffer = deque(maxlen=int(payload["capacity"]))
-        for state, action, reward, next_state, done, next_allowed in zip(
+        teacher_actions = payload.get("teacher_actions") or [None] * len(payload["actions"])
+        for state, action, reward, next_state, done, next_allowed, teacher_action in zip(
             payload["states"].numpy(),
             payload["actions"].tolist(),
             payload["rewards"].tolist(),
             payload["next_states"].numpy(),
             payload["dones"].tolist(),
             payload["next_allowed"],
+            teacher_actions,
         ):
-            self.push(state, action, reward, next_state, done, next_allowed)
+            self.push(state, action, reward, next_state, done, next_allowed, teacher_action)
 
     def __len__(self):
         return len(self.buffer)
@@ -120,10 +135,15 @@ class DDQNAgent:
         buffer_capacity: int = 10_000,
         batch_size: int = 128,
         target_update_freq: int = 500,  # games between target network updates
+        target_update_freq_steps: int | None = None,  # optional: sync by gradient steps instead
         hidden_dim: int = 1024,
         win_loss_bonus: float = 10.0,   # constant c=10 for DDQN (paper Exp 1)
         exploration_mode: str = "section_balanced",
         decision_penalty: float = 0.002,
+        margin: float = 0.8,
+        distill_weight_start: float = 0.0,
+        distill_decay: float = 0.999,
+        distill_weight_end: float = 0.0,
         device: str = "auto",
     ):
         self.player_id       = player_id
@@ -134,7 +154,25 @@ class DDQNAgent:
         self.epsilon_decay   = epsilon_decay
         self.batch_size      = batch_size
         self.target_update_freq = target_update_freq
+        # Games-based sync (target_update_freq) is the paper's original
+        # design, tuned for a 10,000-game run. On a much shorter run it
+        # syncs only a handful of times total, which starves DDQN's
+        # bootstrapped targets of fresh Q-estimates -- diagnosed 2026-08-11
+        # after a 1000-game run stayed at 0% win rate with correctly-signed
+        # rewards throughout. target_update_freq_steps, if set, syncs by
+        # gradient-update count instead and composes additively with the
+        # games-based sync (extra syncs are never harmful).
+        self.target_update_freq_steps = target_update_freq_steps
+        self.gradient_steps = 0
         self.win_loss_bonus  = win_loss_bonus
+        # Generic DQfD-style demo-imitation loss, OFF by default (weight 0).
+        # ASU output cloning is against competition rules -- this only
+        # activates for demo transitions from a compliant source (e.g. your
+        # own prior checkpoints), which the caller must supply explicitly.
+        self.margin              = margin
+        self.distill_weight      = distill_weight_start
+        self.distill_decay       = distill_decay
+        self.distill_weight_end  = distill_weight_end
         if exploration_mode not in {"section_balanced", "uniform_actions"}:
             raise ValueError(f"Unknown DDQN exploration mode: {exploration_mode}")
         self.exploration_mode = exploration_mode
@@ -216,25 +254,28 @@ class DDQNAgent:
     # ── Learning step ─────────────────────────────────────────────────────────
 
     def store_transition(
-        self, state, action, reward, next_state, done, next_allowed
+        self, state, action, reward, next_state, done, next_allowed, teacher_action=None
     ):
         if not done and not next_allowed:
             raise ValueError("Non-terminal DDQN transitions need legal next actions")
-        self.buffer.push(state, action, reward, next_state, done, next_allowed)
+        self.buffer.push(state, action, reward, next_state, done, next_allowed, teacher_action)
         self.step_count += 1
 
     def finish_episode(self) -> None:
         self.games_trained += 1
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+        self.distill_weight = max(
+            self.distill_weight_end, self.distill_weight * self.distill_decay
+        )
         if self.games_trained % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.online_net.state_dict())
 
     def add_win_loss(self, won: bool):
         """Add win/loss bonus to the most recent transition."""
         if self.win_loss_bonus != 0 and len(self.buffer) > 0:
-            s, a, r, ns, d, allowed = self.buffer.buffer[-1]
+            s, a, r, ns, d, allowed, teacher_action = self.buffer.buffer[-1]
             bonus = self.win_loss_bonus if won else -self.win_loss_bonus
-            self.buffer.buffer[-1] = (s, a, r + bonus, ns, d, allowed)
+            self.buffer.buffer[-1] = (s, a, r + bonus, ns, d, allowed, teacher_action)
 
     @staticmethod
     def _masked_argmax(
@@ -246,12 +287,40 @@ class DDQNAgent:
             mask[row, valid] = True
         return q_values.masked_fill(~mask, float("-inf")).argmax(1)
 
+    def _margin_loss(self, q_all: torch.Tensor, teacher_actions: tuple) -> tuple[torch.Tensor, int]:
+        """
+        DQfD large-margin loss (Hester et al. 2018) for the demo-labeled rows
+        of a batch: max_a[Q(s,a) + margin*1(a!=a_e)] - Q(s,a_e), pushing the
+        demonstrator's action above every other action's Q by at least
+        ``margin``. Deliberately *not* cross-entropy on Q-values: CE would
+        fight the MSE Bellman term for control of the Q scale (Bellman
+        targets live in reward units -- potential deltas clipped to +/-2,
+        win_loss_bonus +/-10 -- softmax-CE has no such scale). The max here
+        runs over the full action space rather than the state's legal-action
+        mask; since the demonstrator's action is always legal, this is a
+        superset constraint on the same optimum, just spending a little
+        gradient on actions that were never reachable anyway.
+        """
+        demo_idx = [i for i, t in enumerate(teacher_actions) if t is not None]
+        if not demo_idx:
+            return torch.zeros((), device=q_all.device), 0
+        idx_t = torch.tensor(demo_idx, device=q_all.device)
+        teacher_idx = torch.tensor(
+            [teacher_actions[i] for i in demo_idx], device=q_all.device
+        )
+        demo_q = q_all[idx_t]
+        margin = torch.full_like(demo_q, self.margin)
+        margin.scatter_(1, teacher_idx.unsqueeze(1), 0.0)
+        supervised_max = (demo_q + margin).max(dim=1).values
+        teacher_q = demo_q.gather(1, teacher_idx.unsqueeze(1)).squeeze(1)
+        return (supervised_max - teacher_q).mean(), len(demo_idx)
+
     def update(self) -> dict:
         """Sample mini-batch and perform a DDQN gradient step."""
         if len(self.buffer) < self.batch_size:
             return {}
 
-        states, actions, rewards, next_states, dones, next_allowed = (
+        states, actions, rewards, next_states, dones, next_allowed, teacher_actions = (
             self.buffer.sample(self.batch_size)
         )
         states = states.to(self.device)
@@ -261,7 +330,8 @@ class DDQNAgent:
         dones = dones.to(self.device)
 
         # Current Q-values
-        q_values = self.online_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        q_all = self.online_net(states)
+        q_values = q_all.gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # DDQN target: use online net to select action, target net to evaluate
         with torch.no_grad():
@@ -273,14 +343,35 @@ class DDQNAgent:
             ).squeeze(1)
             targets = rewards + self.gamma * next_q * (1 - dones)
 
-        loss = nn.MSELoss()(q_values, targets)
+        bellman_loss = nn.MSELoss()(q_values, targets)
+
+        margin_loss, n_demo = (
+            self._margin_loss(q_all, teacher_actions)
+            if self.distill_weight > 0
+            else (torch.zeros((), device=self.device), 0)
+        )
+        loss = bellman_loss + self.distill_weight * margin_loss
 
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.online_net.parameters(), 1.0)
         self.optimizer.step()
 
-        return {"loss": loss.item(), "epsilon": self.epsilon}
+        self.gradient_steps += 1
+        if (
+            self.target_update_freq_steps
+            and self.gradient_steps % self.target_update_freq_steps == 0
+        ):
+            self.target_net.load_state_dict(self.online_net.state_dict())
+
+        return {
+            "loss": loss.item(),
+            "bellman_loss": bellman_loss.item(),
+            "margin_loss": margin_loss.item() if n_demo else 0.0,
+            "demo_fraction": n_demo / self.batch_size,
+            "distill_weight": self.distill_weight,
+            "epsilon": self.epsilon,
+        }
 
     def save(self, path: str):
         destination = Path(path)
@@ -296,17 +387,23 @@ class DDQNAgent:
                 "hybrid": self.hybrid,
                 "hidden_dim": self.hidden_dim,
                 "step_count": self.step_count,
+                "gradient_steps": self.gradient_steps,
                 "games_trained": self.games_trained,
                 "epsilon": self.epsilon,
+                "distill_weight": self.distill_weight,
                 "training_config": {
                     "gamma": self.gamma,
                     "epsilon_end": self.epsilon_end,
                     "epsilon_decay": self.epsilon_decay,
                     "batch_size": self.batch_size,
                     "target_update_freq": self.target_update_freq,
+                    "target_update_freq_steps": self.target_update_freq_steps,
                     "win_loss_bonus": self.win_loss_bonus,
                     "exploration_mode": self.exploration_mode,
                     "decision_penalty": self.decision_penalty,
+                    "margin": self.margin,
+                    "distill_decay": self.distill_decay,
+                    "distill_weight_end": self.distill_weight_end,
                 },
                 "online": self.online_net.state_dict(),
                 "target": self.target_net.state_dict(),
@@ -356,5 +453,7 @@ class DDQNAgent:
             setattr(self, key, value)
         self.buffer.load_state_dict(ckpt["replay"])
         self.step_count = int(ckpt["step_count"])
+        self.gradient_steps = int(ckpt.get("gradient_steps", 0))
         self.games_trained = int(ckpt["games_trained"])
         self.epsilon = float(ckpt["epsilon"])
+        self.distill_weight = float(ckpt.get("distill_weight", self.distill_weight))

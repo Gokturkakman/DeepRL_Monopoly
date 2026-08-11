@@ -32,11 +32,87 @@ import numpy as np
 import torch
 
 from .actions import ActionType
-from .agents_fixed import FixedPolicyAgent, FPAgentA, FPAgentB, FPAgentC
+from .agents_fixed import (
+    FixedPolicyAgent,
+    FPAgentA,
+    FPAgentB,
+    FPAgentC,
+    TheBlocker,
+    TheBuilder,
+    TheDealMaker,
+    TheGambler,
+    TheHoarder,
+    TheRailBaron,
+)
 from .constants import NUM_PLAYERS
 from .env import MonopolyEnv
 
 POTENTIAL_REWARD_LIMIT = 2.0
+
+# Opponent pool for training: five noised personalities. TheRailBaron is
+# deliberately excluded and reserved as a held-out generalization probe
+# (see evaluate_held_out) -- a policy that only beats personalities it
+# trained against has learned to exploit their specific decision
+# boundaries, not to play Monopoly well in general.
+TRAINING_POOL_CLASSES = [TheHoarder, TheDealMaker, TheGambler, TheBuilder, TheBlocker]
+HELD_OUT_CLASS = TheRailBaron
+
+DEFAULT_OPPONENT_EPSILON = 0.1
+DEFAULT_OPPONENT_THRESHOLD_JITTER = 0.2
+
+
+def _sample_opponents(
+    other_pids: List[int],
+    rng: random.Random,
+    pool: List[type] | None = None,
+    epsilon: float = DEFAULT_OPPONENT_EPSILON,
+    threshold_jitter: float = DEFAULT_OPPONENT_THRESHOLD_JITTER,
+    asu_factory=None,
+    asu_probability: float = 0.0,
+    self_play_pool=None,
+    self_play_probability: float = 0.0,
+    self_play_epsilon: float = 0.15,
+) -> List[FixedPolicyAgent]:
+    """
+    Sample one noised fixed-policy opponent per seat, with replacement.
+
+    ``asu_factory`` (e.g. ASU_FROZEN_TEACHER.opponent.ASUOpponent) is kept
+    optional and out of this module's imports on purpose: train.py has no
+    dependency on ASU_FROZEN_TEACHER, the caller supplies the class. Playing
+    against ASU is allowed by competition rules; training on its output is
+    not, and that constraint belongs to the caller, not to this sampler. At
+    most one seat per game becomes ASU, at probability ``asu_probability``,
+    since ASU's own decision cost is 1-2 orders of magnitude above a fixed
+    heuristic's and can dominate wall-clock if given every seat.
+
+    ``self_play_pool`` (monopoly_game_engine.self_play.SelfPlayPool) has no
+    such cost cap -- a snapshot's forward pass costs about the same as the
+    learner's own, so more than one self-play seat per game is fine.
+    """
+    classes = pool if pool is not None else TRAINING_POOL_CLASSES
+    agents = []
+    asu_seat_used = False
+    for pid in other_pids:
+        if asu_factory is not None and not asu_seat_used and rng.random() < asu_probability:
+            agents.append(
+                asu_factory(pid, epsilon=epsilon, threshold_jitter=threshold_jitter, rng=rng)
+            )
+            asu_seat_used = True
+        elif (
+            self_play_pool is not None
+            and len(self_play_pool) > 0
+            and rng.random() < self_play_probability
+        ):
+            agents.append(
+                self_play_pool.sample_opponent(pid, rng, epsilon=self_play_epsilon)
+            )
+        else:
+            agents.append(
+                rng.choice(classes)(
+                    pid, epsilon=epsilon, threshold_jitter=threshold_jitter, rng=rng
+                )
+            )
+    return agents
 
 
 def run_episode(
@@ -296,9 +372,28 @@ def train(
     checkpoint_every: int = 0,
     checkpoint_path: str | None = None,
     watchdog=None,
+    opponent_pool: List[type] | None = None,
+    opponent_epsilon: float = DEFAULT_OPPONENT_EPSILON,
+    opponent_threshold_jitter: float = DEFAULT_OPPONENT_THRESHOLD_JITTER,
+    held_out_eval_games: int = 20,
+    asu_factory=None,
+    asu_probability: float = 0.0,
+    self_play_pool=None,
+    self_play_probability: float = 0.0,
+    self_play_epsilon: float = 0.15,
+    self_play_register_every: int = 200,
 ) -> Dict:
     """
     Main training function.
+
+    Non-learner seats are resampled every game from ``opponent_pool``
+    (default TRAINING_POOL_CLASSES) with epsilon-noise and threshold
+    jitter, so the learner faces a shifting mix of personalities instead
+    of the same three deterministic opponents for the whole run. Every
+    ``log_every`` games a short held-out probe against noised TheRailBaron
+    (never in the training pool) is logged alongside the in-pool win rate,
+    so overfitting to the training opponents shows up during training
+    instead of only at final evaluation.
 
     Returns:
         history: dict with win_rates (list per log_every games) and other metrics
@@ -310,8 +405,7 @@ def train(
     env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=200)
 
     other_pids = [i for i in range(NUM_PLAYERS) if i != agent_pid]
-    fp_classes = [FPAgentA, FPAgentB, FPAgentC]
-    fp_agents = [fp_classes[i](other_pids[i]) for i in range(3)]
+    opponent_rng = random.Random(seed)
 
     history = defaultdict(list)
     wins_window = 0
@@ -354,9 +448,29 @@ def train(
                 history["stop_reason"] = str(exc)
                 break
 
+        fp_agents = _sample_opponents(
+            other_pids,
+            opponent_rng,
+            pool=opponent_pool,
+            epsilon=opponent_epsilon,
+            threshold_jitter=opponent_threshold_jitter,
+            asu_factory=asu_factory,
+            asu_probability=asu_probability,
+            self_play_pool=self_play_pool,
+            self_play_probability=self_play_probability,
+            self_play_epsilon=self_play_epsilon,
+        )
         result = run_episode(env, learning_agent, fp_agents, agent_pid, is_ppo)
         games_completed = game_num
         learning_agent.games_trained = absolute_game
+
+        if (
+            self_play_pool is not None
+            and hasattr(learning_agent, "online_net")
+            and self_play_register_every > 0
+            and absolute_game % self_play_register_every == 0
+        ):
+            self_play_pool.register(learning_agent)
 
         if (
             checkpoint_path
@@ -390,6 +504,21 @@ def train(
             history["avg_trades_declined"].append(avg_trades_dec)
             history["avg_properties_acquired"].append(avg_props)
 
+            held_out_str = ""
+            if held_out_eval_games > 0:
+                saved_epsilon = getattr(learning_agent, "epsilon", None)
+                held_out = evaluate_held_out(
+                    learning_agent,
+                    is_ppo,
+                    n_games=held_out_eval_games,
+                    n_runs=1,
+                    seed=absolute_game,
+                )
+                if saved_epsilon is not None:
+                    learning_agent.epsilon = saved_epsilon
+                history["held_out_win_rate"].append(held_out["mean_win_rate"])
+                held_out_str = f"  HeldOut%: {held_out['mean_win_rate']:5.1f}%"
+
             eps_str = (
                 f"  ε={learning_agent.epsilon:.3f}"
                 if hasattr(learning_agent, "epsilon")
@@ -397,7 +526,7 @@ def train(
             )
             print(
                 f"  Game {absolute_game:5d} | "
-                f"Win%: {win_rate:5.1f}%{eps_str} | "
+                f"Win%: {win_rate:5.1f}%{held_out_str}{eps_str} | "
                 f"Props: {avg_props:.1f} | "
                 f"Trades init/acc/dec: "
                 f"{avg_trades_init:.1f}/{avg_trades_acc:.1f}/{avg_trades_dec:.1f}"
@@ -427,11 +556,19 @@ def evaluate(
     n_games: int = 2000,
     n_runs: int = 5,
     seed: int = 0,
+    opponent_classes: List[type] | None = None,
+    opponent_epsilon: float = 0.0,
+    opponent_threshold_jitter: float = 0.0,
 ) -> Dict:
     """
     Evaluate a trained agent over n_runs × n_games.
     Sets epsilon=0 for DDQN automatically.
     Returns win rates plus per-game averages of all tracked metrics.
+
+    ``opponent_classes`` defaults to the original fixed A/B/C baseline
+    (deterministic, no noise) for backward-compatible comparison against
+    past TRAINING_RESULTS.md figures. Pass TRAINING_POOL_CLASSES or
+    ``[HELD_OUT_CLASS]`` with nonzero noise for the diversity-aware probes.
     """
     if hasattr(learning_agent, "epsilon"):
         learning_agent.epsilon = 0.0
@@ -439,10 +576,18 @@ def evaluate(
     agent_pid = learning_agent.player_id
     env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=200)
     other_pids = [i for i in range(NUM_PLAYERS) if i != agent_pid]
+    classes = (
+        opponent_classes if opponent_classes is not None else [FPAgentA, FPAgentB, FPAgentC]
+    )
+    eval_rng = random.Random(seed)
     fp_agents = [
-        FPAgentA(other_pids[0]),
-        FPAgentB(other_pids[1]),
-        FPAgentC(other_pids[2]),
+        classes[i % len(classes)](
+            other_pids[i],
+            epsilon=opponent_epsilon,
+            threshold_jitter=opponent_threshold_jitter,
+            rng=eval_rng,
+        )
+        for i in range(3)
     ]
 
     all_wins = []
@@ -496,3 +641,54 @@ def evaluate(
         "avg_trades_accepted": float(np.mean(all_ta)),
         "avg_trades_declined": float(np.mean(all_td)),
     }
+
+
+def evaluate_in_pool(
+    learning_agent,
+    is_ppo: bool,
+    n_games: int = 2000,
+    n_runs: int = 5,
+    seed: int = 0,
+    epsilon: float = DEFAULT_OPPONENT_EPSILON,
+    threshold_jitter: float = DEFAULT_OPPONENT_THRESHOLD_JITTER,
+) -> Dict:
+    """Win rate against the noised training-pool mix (in-distribution)."""
+    return evaluate(
+        learning_agent,
+        is_ppo,
+        n_games=n_games,
+        n_runs=n_runs,
+        seed=seed,
+        opponent_classes=TRAINING_POOL_CLASSES,
+        opponent_epsilon=epsilon,
+        opponent_threshold_jitter=threshold_jitter,
+    )
+
+
+def evaluate_held_out(
+    learning_agent,
+    is_ppo: bool,
+    n_games: int = 500,
+    n_runs: int = 3,
+    seed: int = 0,
+    epsilon: float = DEFAULT_OPPONENT_EPSILON,
+    threshold_jitter: float = DEFAULT_OPPONENT_THRESHOLD_JITTER,
+) -> Dict:
+    """
+    Generalization probe. TheRailBaron never appears in TRAINING_POOL_CLASSES,
+    so a win rate here tracking the in-pool win rate is evidence of general
+    play; a win rate that lags badly is evidence of overfitting to the
+    training opponents' specific decision boundaries rather than to Monopoly
+    itself. This is a separate number from vs-ASU: ASU is the distillation
+    teacher, so vs-ASU alone cannot detect this failure mode.
+    """
+    return evaluate(
+        learning_agent,
+        is_ppo,
+        n_games=n_games,
+        n_runs=n_runs,
+        seed=seed,
+        opponent_classes=[HELD_OUT_CLASS],
+        opponent_epsilon=epsilon,
+        opponent_threshold_jitter=threshold_jitter,
+    )

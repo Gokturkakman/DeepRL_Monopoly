@@ -125,14 +125,40 @@ def _exchange_action(
 class FixedPolicyAgent:
     """
     Minimal base class. Concrete agents override every decision method.
+
+    ``epsilon`` and ``threshold_jitter`` exist to keep these personalities
+    from being perfectly deterministic opponents: a learning agent trained
+    only against argmax-fixed heuristics tends to exploit their exact
+    decision boundaries rather than learning generally strong play. Subclass
+    ``_JITTER_ATTRS`` names the class-level cash/price constants that get
+    randomized per instance.
     """
 
-    def __init__(self, player_id: int):
+    _JITTER_ATTRS: tuple = ()
+
+    def __init__(
+        self,
+        player_id: int,
+        epsilon: float = 0.0,
+        threshold_jitter: float = 0.0,
+        rng: Optional[random.Random] = None,
+    ):
         self.player_id = player_id
+        self.epsilon = epsilon
+        self._rng = rng if rng is not None else random
+        if threshold_jitter > 0:
+            for name in self._JITTER_ATTRS:
+                base_value = getattr(self, name)
+                factor = self._rng.uniform(1 - threshold_jitter, 1 + threshold_jitter)
+                jittered = base_value * factor
+                setattr(self, name, type(base_value)(jittered))
 
     def choose_action(self, env: MonopolyEnv) -> int:
         allowed = env.get_allowed_actions(self.player_id)
         player = env.players[self.player_id]
+
+        if self.epsilon > 0 and self._rng.random() < self.epsilon:
+            return self._rng.choice(allowed)
 
         if env.phase == PHASE_AUCTION:
             return self._auction_action(allowed, env)
@@ -238,6 +264,7 @@ class TheHoarder(FixedPolicyAgent):
 
     _CASH_FLOOR = 400
     _BUY_BUFFER = 600
+    _JITTER_ATTRS = ("_CASH_FLOOR", "_BUY_BUFFER")
 
     def _should_accept_trade(self, offer, env):
         return False
@@ -312,6 +339,7 @@ class TheDealMaker(FixedPolicyAgent):
 
     _BUY_BUFFER = 100
     _BUILD_BUFFER = 800
+    _JITTER_ATTRS = ("_BUY_BUFFER", "_BUILD_BUFFER")
 
     def _should_accept_trade(self, offer, env):
         return False
@@ -440,6 +468,7 @@ class TheGambler(FixedPolicyAgent):
 
     _COMFORTABLE_CASH = 1000
     _DESPERATION_CASH = 100
+    _JITTER_ATTRS = ("_COMFORTABLE_CASH", "_DESPERATION_CASH")
 
     def _should_accept_trade(self, offer, env):
         pid = self.player_id
@@ -543,9 +572,16 @@ class TheBuilder(FixedPolicyAgent):
     _TARGET_COLORS = {"green", "darkblue"}
     _BUILD_CASH_FLOOR = 50
     _MORTGAGE_TRIGGER = 200
+    _JITTER_ATTRS = ("_BUILD_CASH_FLOOR", "_MORTGAGE_TRIGGER")
 
-    def __init__(self, player_id: int):
-        super().__init__(player_id)
+    def __init__(
+        self,
+        player_id: int,
+        epsilon: float = 0.0,
+        threshold_jitter: float = 0.0,
+        rng: Optional[random.Random] = None,
+    ):
+        super().__init__(player_id, epsilon, threshold_jitter, rng)
         self._target_squares = [
             sq for sq in PROPERTY_IDS if PROPERTIES[sq]["color"] in self._TARGET_COLORS
         ]
@@ -667,6 +703,7 @@ class TheBlocker(FixedPolicyAgent):
 
     _BUY_BUFFER = 300
     _MORTGAGE_FLOOR = 350
+    _JITTER_ATTRS = ("_BUY_BUFFER", "_MORTGAGE_FLOOR")
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -807,6 +844,7 @@ class TheRailBaron(FixedPolicyAgent):
 
     _INFRA_SQUARES = set(RAILROAD_IDS) | set(UTILITY_IDS)
     _BUY_BUFFER = 150
+    _JITTER_ATTRS = ("_BUY_BUFFER",)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

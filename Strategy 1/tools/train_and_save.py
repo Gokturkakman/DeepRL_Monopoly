@@ -127,10 +127,123 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=100)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--epsilon-decay",
+        type=float,
+        default=None,
+        help=(
+            "Per-game exploration decay (DDQN only). Default None keeps DDQNAgent's "
+            "0.9995 (tuned for the paper's 10,000-game run -- reaches its epsilon "
+            "floor around game ~6000). For shorter budgets, pass a faster decay so "
+            "the run actually reaches an exploitation-dominated phase; e.g. 0.9985 "
+            "reaches floor ~game 2000."
+        ),
+    )
+    parser.add_argument("--epsilon-end", type=float, default=None)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help=(
+            "DDQN learning rate (default None: DDQNAgent's 1e-5, tuned for the "
+            "paper's 10,000-game run). Diagnosed 2026-08-11: a 1000-game run at "
+            "1e-5 with target_update_freq=500 games (2 syncs total) stayed at 0%% "
+            "win rate despite correctly-signed rewards throughout -- the network "
+            "wasn't absorbing credit fast enough for the run length. Try 1e-4 to "
+            "1e-3 for shorter runs, together with --target-update-freq-steps."
+        ),
+    )
+    parser.add_argument(
+        "--target-update-freq-steps",
+        type=int,
+        default=None,
+        help=(
+            "Sync target network every N gradient steps instead of every "
+            "target-update-freq GAMES (default None: games-based only, ~500 "
+            "games/sync). Composes additively with the games-based sync."
+        ),
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=None,
+        help=(
+            "Fixed games-per-log-window (default None: games//50). Also gates the "
+            "held-out probe, so on a resumed multi-chunk run prefer a fixed value "
+            "over the games//50 default -- that default rescales with the CURRENT "
+            "chunk's --games target, so early small chunks fire the held-out probe "
+            "(and its held_out_eval_games extra simulated games) far more often "
+            "than intended."
+        ),
+    )
     parser.add_argument("--stop-rss-gib", type=float, default=3)
     parser.add_argument("--hard-rss-gib", type=float, default=4)
     parser.add_argument("--min-available-gib", type=float, default=2)
+    parser.add_argument(
+        "--opponent-epsilon",
+        type=float,
+        default=0.1,
+        help="Per-decision random-action probability for training opponents (default: 0.1)",
+    )
+    parser.add_argument(
+        "--opponent-threshold-jitter",
+        type=float,
+        default=0.2,
+        help="Fractional randomization of fixed-opponent cash thresholds (default: 0.2)",
+    )
+    parser.add_argument(
+        "--held-out-eval-games",
+        type=int,
+        default=20,
+        help="Games vs held-out TheRailBaron logged every log-every games (default: 20; 0 disables)",
+    )
+    parser.add_argument(
+        "--asu-opponent-probability",
+        type=float,
+        default=0.0,
+        help=(
+            "Per-game probability one opponent seat becomes ASU (default: 0.0, off). "
+            "Rules allow playing against ASU, never training on its output -- this "
+            "only ever adds ASU as an adversary, nothing here records its decisions. "
+            "ASU's own decision cost is 1-2 orders of magnitude above a fixed "
+            "heuristic's (measured ~0.045s/decision, occasional multi-second tail), "
+            "so keep this low (0.01-0.02) unless you have compute to spare."
+        ),
+    )
+    parser.add_argument(
+        "--asu-decision-timeout",
+        type=float,
+        default=5.0,
+        help="Per-decision wall-clock cap in seconds for the ASU opponent seat (default: 5.0)",
+    )
+    parser.add_argument(
+        "--self-play-probability",
+        type=float,
+        default=0.0,
+        help="Per-seat probability of a past learner checkpoint as opponent (default: 0.0, off)",
+    )
+    parser.add_argument("--self-play-pool-size", type=int, default=8)
+    parser.add_argument("--self-play-epsilon", type=float, default=0.15)
+    parser.add_argument(
+        "--self-play-register-every",
+        type=int,
+        default=200,
+        help="Snapshot the learner into the self-play pool every N games (default: 200)",
+    )
     args = parser.parse_args()
+
+    asu_factory = None
+    if args.asu_opponent_probability > 0:
+        from ASU_FROZEN_TEACHER.opponent import ASUOpponent
+        from functools import partial
+
+        asu_factory = partial(ASUOpponent, decision_timeout=args.asu_decision_timeout)
+
+    self_play_pool = None
+    if args.self_play_probability > 0 and args.algo == "ddqn":
+        from monopoly_game_engine.self_play import SelfPlayPool
+
+        self_play_pool = SelfPlayPool(max_size=args.self_play_pool_size)
 
     # Default output filename
     if args.out is None:
@@ -164,26 +277,50 @@ def main():
             hybrid=args.hybrid,
             player_id=0,
             n_games=args.games,
-            log_every=max(1, args.games // 50),
+            log_every=(args.log_every if args.log_every is not None else max(1, args.games // 50)),
             device=args.device,
             checkpoint_every=args.checkpoint_every,
             checkpoint_path=args.out,
             watchdog=watchdog,
             seed=args.seed,
             resume_path=args.out if args.resume else None,
+            opponent_epsilon=args.opponent_epsilon,
+            opponent_threshold_jitter=args.opponent_threshold_jitter,
+            held_out_eval_games=args.held_out_eval_games,
+            asu_factory=asu_factory,
+            asu_probability=args.asu_opponent_probability,
         )
     else:
+        ddqn_kwargs = {}
+        if args.epsilon_decay is not None:
+            ddqn_kwargs["epsilon_decay"] = args.epsilon_decay
+        if args.epsilon_end is not None:
+            ddqn_kwargs["epsilon_end"] = args.epsilon_end
+        if args.lr is not None:
+            ddqn_kwargs["lr"] = args.lr
+        if args.target_update_freq_steps is not None:
+            ddqn_kwargs["target_update_freq_steps"] = args.target_update_freq_steps
         agent, history = train_ddqn(
             hybrid=args.hybrid,
             player_id=0,
             n_games=args.games,
-            log_every=max(1, args.games // 50),
+            log_every=(args.log_every if args.log_every is not None else max(1, args.games // 50)),
             device=args.device,
             checkpoint_every=args.checkpoint_every,
             checkpoint_path=args.out,
             watchdog=watchdog,
             seed=args.seed,
             resume_path=args.out if args.resume else None,
+            opponent_epsilon=args.opponent_epsilon,
+            opponent_threshold_jitter=args.opponent_threshold_jitter,
+            held_out_eval_games=args.held_out_eval_games,
+            asu_factory=asu_factory,
+            asu_probability=args.asu_opponent_probability,
+            self_play_pool=self_play_pool,
+            self_play_probability=args.self_play_probability,
+            self_play_epsilon=args.self_play_epsilon,
+            self_play_register_every=args.self_play_register_every,
+            **ddqn_kwargs,
         )
 
     elapsed = time.time() - start
