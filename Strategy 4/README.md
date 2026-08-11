@@ -256,6 +256,46 @@ a state-value function good enough to not need auction simulation at all
 (closer to ASU's own approach, and constrained by the same anti-cloning
 rule), or accepting an approximate/statistical opponent bidding model.
 
+## Tuning attempts, 2026-08-12 (round 3: trade acceptance + literature calibration)
+
+**Trade acceptance widened.** `_should_accept_trade` only ever accepted an
+incoming offer that completed our own monopoly in a top-tier group,
+declining everything else regardless of price. Added a generic fallback,
+symmetric with the existing buy-side denial-target logic:
+`_hands_proposer_monopoly` refuses any trade that would complete the
+*proposer's* monopoly (mirrors `_is_opponent_denial_target`, from the
+giving side), and otherwise accepts whenever `TradeOffer.net_worth() > 0`
+(a plain price-based fairness check already exposed by the engine, not
+computed by us). Measured: 44/100, 860 fallbacks -- bit-identical to
+baseline. **Kept anyway** (unlike the reverted jeopardy-floor scaling):
+this one adds no per-decision simulation cost, and it fixes a real
+correctness gap (declining a strictly favourable trade for no reason) even
+though it didn't move this specific 100-game sample.
+
+**Literature calibration, not a code change.** The same Leeds SoC report
+(round 2) reports its own final tuned "Optimal" heuristic strategy's
+measured win rates against baseline personalities in three separate
+3-4-player round robins: 46% (vs Greedy 29%, Tight 25%), 45% (vs Random
+39%, Tight 16%), 53% (vs Random 24%, Greedy 23%). A **published,
+methodically-tuned, purely heuristic** Monopoly agent lands in the same
+25-55% band we're measuring for TheStatistician (40.25-46% across this
+session's variants) -- not because our tuning is bad, but because that
+appears to be roughly where linear/heuristic evaluation functions plateau
+against reasonably-competent fixed opponents in this genre. ASU's 72/100
+is the outlier, not our number -- and its `spec.py` value function is not
+a linear heuristic like ours or the paper's; it's a 5-turn/5-lap
+dice-enumeration rent *projection* (expected future income under the
+actual probability distribution) plus, for `asu_rollout_v1`, genuine
+8x8x32 forward simulation. That is a categorically deeper technique than
+anything triable as an incremental heuristic-weight tweak, and matches
+why three consecutive tuning rounds (14 total attempts) on the static/
+dynamic-heuristic axis have moved the needle by at most a few points.
+**This is the honest ceiling finding this document has been building
+toward**: closing more of the ASU gap plausibly requires the same category
+of technique ASU itself uses (multi-turn expected-rent projection or
+forward simulation), independently derived, not another heuristic-weight
+pass -- a materially bigger implementation than anything attempted so far.
+
 ## Dependency note
 
 This folder is not self-contained -- `agent.py` and `evaluate.py` add

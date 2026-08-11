@@ -4,7 +4,7 @@
   "games_completed": 100,
   "games_requested": 100,
   "opponents": "fixed-a, fixed-b, fixed-c",
-  "scripted_compatibility_fallbacks": 873,
+  "scripted_compatibility_fallbacks": 860,
   "seat_balanced": true,
   "truncations": 0,
   "wilson_95_interval": [

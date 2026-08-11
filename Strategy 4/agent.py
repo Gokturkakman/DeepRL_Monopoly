@@ -265,6 +265,21 @@ class TheStatistician(FixedPolicyAgent):
                     return action
         return None
 
+    def _hands_proposer_monopoly(self, offer, env) -> bool:
+        """True if giving up ``offer.requested_prop`` would complete the
+        proposer's own monopoly -- symmetric to `_is_opponent_denial_target`
+        but from the giving side: never trade away the piece that hands an
+        opponent their own monopoly, no matter how favourable the price."""
+        prop = offer.requested_prop
+        if prop is None:
+            return False
+        color = prop.color
+        if color in ("railroad", "utility"):
+            return False
+        group = COLOR_GROUPS[color]
+        owners = {env.properties[s].owner for s in group if s != prop.square_id}
+        return len(owners) == 1 and offer.from_player in owners
+
     def _should_accept_trade(self, offer, env) -> bool:
         pid = self.player_id
         if offer.offered_prop:
@@ -274,7 +289,12 @@ class TheStatistician(FixedPolicyAgent):
                 would_own = sum(1 for s in group if env.properties[s].owner == pid) + 1
                 if would_own == len(group):
                     return True
-        return False
+        if self._hands_proposer_monopoly(offer, env):
+            return False
+        # Generic fallback: accept any offer that is a clear material gain
+        # for us (offered value + cash > requested value + cash), as long
+        # as it doesn't complete the proposer's monopoly above.
+        return offer.net_worth() > 0
 
     def _maybe_mortgage(self, allowed, env) -> Optional[int]:
         """Routine low-cash management is unchanged in spirit from baseline
