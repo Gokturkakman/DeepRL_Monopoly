@@ -1,0 +1,9 @@
+# Strategy 3 çalışma ortamı.
+# CLAUDE.md kuralı: CPU-only local, ağır koşular Colab'da (GPU orada verilir).
+# Bu yüzden torch burada CPU/varsayılan build ile kurulur, CUDA index yok.
+
+numpy>=1.26
+torch>=2.2
+matplotlib>=3.8
+psutil>=5.9
+pytest>=8.0
