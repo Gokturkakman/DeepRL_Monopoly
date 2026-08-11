@@ -29,7 +29,9 @@ priority function differs.
 
 from __future__ import annotations
 
+import copy
 import json
+import random
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -114,7 +116,49 @@ class TheStatistician(FixedPolicyAgent):
     _BUILD_CASH_FLOOR = 100
     _JITTER_ATTRS = ("_CASH_FLOOR", "_BUILD_CASH_FLOOR")
 
-    def _would_complete_opponent_monopoly(self, sq: int, env) -> bool:
+    _JEOPARDY_WEIGHT = 0.5
+
+    def _lookahead_best(self, candidates: List[int], env) -> Optional[int]:
+        """1-ply lookahead over a short candidate list: clone env, apply
+        each candidate, keep the one with the best resulting position --
+        net-worth potential (``env._compute_reward``, bounded
+        self-vs-mean-opponent net worth) minus a jeopardy penalty (see
+        ``_jeopardy``: fraction of opponent squares whose current rent
+        would bankrupt us). Every caller here restricts candidates to
+        deterministic state mutations (build/sell-house/mortgage) -- no
+        dice roll, no opponent turn in between -- so this is an exact
+        one-step comparison, not an approximate rollout. Restores global
+        RNG state per CLAUDE.md's cloning-for-lookahead rule and never
+        mutates ``env`` itself (`_lookahead_best` only ever operates on
+        `copy.deepcopy` clones)."""
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        pid = self.player_id
+        outer_state = random.getstate()
+        try:
+            best_action, best_value = candidates[0], float("-inf")
+            for action in candidates:
+                clone = copy.deepcopy(env)
+                clone.step(action)
+                value = clone._compute_reward(pid) - self._JEOPARDY_WEIGHT * self._jeopardy(clone)
+                if value > best_value:
+                    best_value = value
+                    best_action = action
+            return best_action
+        finally:
+            random.setstate(outer_state)
+
+    def _is_opponent_denial_target(self, sq: int, env) -> bool:
+        """True if every other square in this square's colour group is
+        already owned by a single opponent -- sq is their last missing
+        piece. Buying it ourselves permanently denies that opponent the
+        monopoly (a 3-piece group split 2-1 can never complete); refusing
+        it just leaves the piece for them to pick up later. This corrects
+        an earlier inverted reading of the same condition that treated
+        "opponent is one piece short" as a reason to pass instead of the
+        strongest possible reason to buy."""
         color = PROPERTIES[sq]["color"]
         if color in ("railroad", "utility"):
             return False
@@ -125,13 +169,41 @@ class TheStatistician(FixedPolicyAgent):
             return owner != self.player_id
         return False
 
+    def _jeopardy(self, env) -> float:
+        """Fraction of opponent-owned squares whose *current* rent (houses,
+        railroad count, utility count all included) exceeds our cash right
+        now -- how much of the board would bankrupt us on a single bad
+        landing. Independently sourced from a published, non-ASU academic
+        source (Khan, "AI for Board Games" final-year project, University
+        of Leeds School of Computing) rather than derived from ASU's own
+        rent-projection formula -- a simple current-rent-vs-cash fraction,
+        not ASU's dice-enumeration multi-lap projection. Dynamic: recomputed
+        every call from live state, unlike this agent's static per-square
+        traffic score."""
+        pid = self.player_id
+        player = env.players[pid]
+        deadly = 0
+        for sq in PROPERTY_IDS:
+            prop = env.properties[sq]
+            if prop.owner is None or prop.owner == pid:
+                continue
+            owner = env.players[prop.owner]
+            rent = prop.get_rent(
+                dice_roll=7,
+                num_railroads=owner.railroads_owned(),
+                num_utilities=owner.utilities_owned(),
+            )
+            if rent > player.cash:
+                deadly += 1
+        return deadly / len(PROPERTY_IDS)
+
     def _should_buy(self, player, prop, env) -> bool:
         sq = prop.square_id
         price = PROPERTIES[sq]["price"]
         if not player.can_afford(price + self._CASH_FLOOR):
             return False
-        if self._would_complete_opponent_monopoly(sq, env):
-            return False  # never hand an opponent a free monopoly
+        if self._is_opponent_denial_target(sq, env):
+            return True  # deny an opponent's last piece -- always worth it
         if PROPERTIES[sq]["color"] in ("railroad", "utility"):
             return True
         color = PROPERTIES[sq]["color"]
@@ -149,23 +221,28 @@ class TheStatistician(FixedPolicyAgent):
         return None
 
     def _best_build_action(self, allowed, env) -> Optional[int]:
+        """Gather every affordable build action across owned monopolies,
+        then 1-ply lookahead (`_lookahead_best`) to pick the one that
+        actually leaves the best net-worth potential -- rather than the
+        static traffic x rent/price score, which ranks squares in
+        isolation and ignores how much of the build budget each one
+        consumes relative to its immediate payoff."""
         player = env.players[self.player_id]
-        candidates = []
+        candidates = []  # (sq, action) -- sorted by score before lookahead
         for i, sq in enumerate(REAL_ESTATE_IDS):
             prop = env.properties[sq]
             if prop.owner != self.player_id or not prop.is_monopoly:
                 continue
-            candidates.append((sq, i, prop))
-        candidates.sort(key=lambda item: -_SCORES.get(item[0], 0.0))
-        for sq, i, prop in candidates:
             house_price = PROPERTIES[sq]["house_price"]
             if not player.can_afford(house_price + self._BUILD_CASH_FLOOR):
                 continue
             for action_key in ("improve_hotel", "improve_house"):
                 action = OFFSETS[action_key] + i
                 if action in allowed:
-                    return action
-        return None
+                    candidates.append((sq, action))
+                    break
+        candidates.sort(key=lambda item: -_SCORES.get(item[0], 0.0))
+        return self._lookahead_best([action for _, action in candidates], env)
 
     def _make_trade_offer(self, allowed, env) -> Optional[int]:
         pid = self.player_id
@@ -200,22 +277,72 @@ class TheStatistician(FixedPolicyAgent):
         return False
 
     def _maybe_mortgage(self, allowed, env) -> Optional[int]:
+        """Routine low-cash management is unchanged in spirit from baseline
+        (mortgage a bare property, otherwise do nothing -- a dip under the
+        floor is not an emergency), except the choice of *which* bare
+        property now goes through 1-ply lookahead instead of the static
+        score. Only in the engine's actual forced-debt phase
+        (``env.debt_player == self.player_id``, unpaid rent that must be
+        settled before the turn can continue) does this escalate through
+        houses/hotels and monopoly mortgages -- without that escalation the
+        agent has nothing left to offer, `choose_action` falls through to an
+        illegal END_TURN, and the harness's compatibility fallback picks an
+        arbitrary legal action (`allowed[0]`) instead of a deliberate one."""
         player = env.players[self.player_id]
-        if player.cash >= self._CASH_FLOOR:
+        pid = self.player_id
+        forced_debt = getattr(env, "debt_player", None) == pid
+
+        if not forced_debt and player.cash >= self._CASH_FLOOR:
             return None
-        candidates = []
-        for sq in PROPERTY_IDS:
-            prop = env.properties.get(sq)
-            if prop is None or prop.owner != self.player_id or prop.is_monopoly or prop.houses > 0:
+
+        owned = [sq for sq in PROPERTY_IDS if env.properties[sq].owner == pid]
+        owned.sort(key=lambda sq: _SCORES.get(sq, 0.0))  # weakest first (tie-break)
+
+        # 1. Mortgage a bare, non-monopoly property -- baseline behaviour,
+        #    safe in both the routine and forced cases. Lookahead picks
+        #    which one among however many are legal.
+        bare_candidates = []
+        for sq in owned:
+            prop = env.properties[sq]
+            if prop.is_monopoly or prop.houses > 0 or prop.mortgaged:
                 continue
-            candidates.append(sq)
-        candidates.sort(key=lambda sq: _SCORES.get(sq, 0.0))  # lowest score first
-        for sq in candidates:
             idx = PROPERTY_IDS.index(sq)
             action = OFFSETS["mortgage"] + idx
             if action in allowed:
-                return action
-        return None
+                bare_candidates.append(action)
+        if bare_candidates:
+            return self._lookahead_best(bare_candidates, env)
+
+        if not forced_debt:
+            return None  # routine dip, nothing safe to mortgage -- do nothing
+
+        # Forced debt with no bare property left: escalate.
+        # 2. Sell houses/hotels off a developed property.
+        house_candidates = []
+        for sq in owned:
+            prop = env.properties[sq]
+            if prop.houses <= 0:
+                continue
+            i = REAL_ESTATE_IDS.index(sq)
+            action_key = "sell_hotel" if prop.houses == 5 else "sell_house"
+            action = OFFSETS[action_key] + i
+            if action in allowed:
+                house_candidates.append(action)
+        if house_candidates:
+            return self._lookahead_best(house_candidates, env)
+
+        # 3. Last resort: mortgage a monopoly holding too (only legal once
+        #    step 2 has cleared any houses on that group).
+        monopoly_candidates = []
+        for sq in owned:
+            prop = env.properties[sq]
+            if prop.mortgaged:
+                continue
+            idx = PROPERTY_IDS.index(sq)
+            action = OFFSETS["mortgage"] + idx
+            if action in allowed:
+                monopoly_candidates.append(action)
+        return self._lookahead_best(monopoly_candidates, env)
 
 
 __all__ = ["TheStatistician"]

@@ -1,16 +1,16 @@
 {
   "agent": "TheStatistician (Strategy 4)",
   "asu_value_v1_reference": "72/100 seat-balanced vs Fixed-A/B/C (Strategy 1/REPO_STUDY_NOTES.md)",
-  "games_completed": 100,
-  "games_requested": 100,
+  "games_completed": 400,
+  "games_requested": 400,
   "opponents": "fixed-a, fixed-b, fixed-c",
-  "scripted_compatibility_fallbacks": 873,
+  "scripted_compatibility_fallbacks": 4842,
   "seat_balanced": true,
   "truncations": 0,
   "wilson_95_interval": [
-    0.34672026630160796,
-    0.5377189534832302
+    0.3555891011441365,
+    0.4512657962510514
   ],
-  "win_rate": 0.44,
-  "wins": 44
+  "win_rate": 0.4025,
+  "wins": 161
 }
