@@ -1,0 +1,460 @@
+{
+  "games": 200,
+  "total_landings": 66007,
+  "per_square": [
+    {
+      "square": 0,
+      "name": "GO",
+      "landings": 1428,
+      "frequency": 0.02163406911388186
+    },
+    {
+      "square": 1,
+      "name": "Mediterranean Ave",
+      "landings": 1494,
+      "frequency": 0.02263396306452346
+    },
+    {
+      "square": 2,
+      "name": "Community Chest 1",
+      "landings": 1473,
+      "frequency": 0.022315814989319314
+    },
+    {
+      "square": 3,
+      "name": "Baltic Ave",
+      "landings": 1522,
+      "frequency": 0.023058160498128987
+    },
+    {
+      "square": 4,
+      "name": "Income Tax",
+      "landings": 1537,
+      "frequency": 0.023285409123274804
+    },
+    {
+      "square": 5,
+      "name": "Reading Railroad",
+      "landings": 1489,
+      "frequency": 0.022558213522808186
+    },
+    {
+      "square": 6,
+      "name": "Oriental Ave",
+      "landings": 1496,
+      "frequency": 0.022664262881209568
+    },
+    {
+      "square": 7,
+      "name": "Chance 1",
+      "landings": 1609,
+      "frequency": 0.02437620252397473
+    },
+    {
+      "square": 8,
+      "name": "Vermont Ave",
+      "landings": 1549,
+      "frequency": 0.02346720802339146
+    },
+    {
+      "square": 9,
+      "name": "Connecticut Ave",
+      "landings": 1515,
+      "frequency": 0.022952111139727605
+    },
+    {
+      "square": 10,
+      "name": "Jail/Just Visiting",
+      "landings": 3485,
+      "frequency": 0.05279743057554502
+    },
+    {
+      "square": 11,
+      "name": "St. Charles Place",
+      "landings": 1562,
+      "frequency": 0.023664156831851167
+    },
+    {
+      "square": 12,
+      "name": "Electric Company",
+      "landings": 1661,
+      "frequency": 0.025163997757813566
+    },
+    {
+      "square": 13,
+      "name": "States Ave",
+      "landings": 1599,
+      "frequency": 0.024224703440544185
+    },
+    {
+      "square": 14,
+      "name": "Virginia Ave",
+      "landings": 1737,
+      "frequency": 0.02631539079188571
+    },
+    {
+      "square": 15,
+      "name": "Pennsylvania Railroad",
+      "landings": 1661,
+      "frequency": 0.025163997757813566
+    },
+    {
+      "square": 16,
+      "name": "St. James Place",
+      "landings": 1826,
+      "frequency": 0.02766373263441756
+    },
+    {
+      "square": 17,
+      "name": "Community Chest 2",
+      "landings": 1876,
+      "frequency": 0.02842122805157029
+    },
+    {
+      "square": 18,
+      "name": "Tennessee Ave",
+      "landings": 1841,
+      "frequency": 0.02789098125956338
+    },
+    {
+      "square": 19,
+      "name": "New York Ave",
+      "landings": 1787,
+      "frequency": 0.027072886209038437
+    },
+    {
+      "square": 20,
+      "name": "Free Parking",
+      "landings": 1834,
+      "frequency": 0.027784931901161998
+    },
+    {
+      "square": 21,
+      "name": "Kentucky Ave",
+      "landings": 1719,
+      "frequency": 0.026042692441710726
+    },
+    {
+      "square": 22,
+      "name": "Chance 2",
+      "landings": 1842,
+      "frequency": 0.027906131167906432
+    },
+    {
+      "square": 23,
+      "name": "Indiana Ave",
+      "landings": 1733,
+      "frequency": 0.02625479115851349
+    },
+    {
+      "square": 24,
+      "name": "Illinois Ave",
+      "landings": 1784,
+      "frequency": 0.027027436484009272
+    },
+    {
+      "square": 25,
+      "name": "B&O Railroad",
+      "landings": 1852,
+      "frequency": 0.02805763025133698
+    },
+    {
+      "square": 26,
+      "name": "Atlantic Ave",
+      "landings": 1740,
+      "frequency": 0.026360840516914872
+    },
+    {
+      "square": 27,
+      "name": "Ventnor Ave",
+      "landings": 1771,
+      "frequency": 0.026830487675549564
+    },
+    {
+      "square": 28,
+      "name": "Water Works",
+      "landings": 1757,
+      "frequency": 0.0266183889587468
+    },
+    {
+      "square": 29,
+      "name": "Marvin Gardens",
+      "landings": 1773,
+      "frequency": 0.026860787492235673
+    },
+    {
+      "square": 30,
+      "name": "Go To Jail",
+      "landings": 0,
+      "frequency": 0.0
+    },
+    {
+      "square": 31,
+      "name": "Pacific Ave",
+      "landings": 1750,
+      "frequency": 0.02651233960034542
+    },
+    {
+      "square": 32,
+      "name": "North Carolina Ave",
+      "landings": 1754,
+      "frequency": 0.026572939233717636
+    },
+    {
+      "square": 33,
+      "name": "Community Chest 3",
+      "landings": 1659,
+      "frequency": 0.025133697941127457
+    },
+    {
+      "square": 34,
+      "name": "Pennsylvania Ave",
+      "landings": 1559,
+      "frequency": 0.023618707106822005
+    },
+    {
+      "square": 35,
+      "name": "Short Line Railroad",
+      "landings": 1593,
+      "frequency": 0.02413380399048586
+    },
+    {
+      "square": 36,
+      "name": "Chance 3",
+      "landings": 1470,
+      "frequency": 0.022270365264290153
+    },
+    {
+      "square": 37,
+      "name": "Park Place",
+      "landings": 1390,
+      "frequency": 0.02105837259684579
+    },
+    {
+      "square": 38,
+      "name": "Luxury Tax",
+      "landings": 1456,
+      "frequency": 0.02205826654748739
+    },
+    {
+      "square": 39,
+      "name": "Boardwalk",
+      "landings": 1424,
+      "frequency": 0.021573469480509644
+    }
+  ],
+  "ranked_squares": [
+    {
+      "square": 10,
+      "name": "Jail/Just Visiting",
+      "landings": 3485
+    },
+    {
+      "square": 17,
+      "name": "Community Chest 2",
+      "landings": 1876
+    },
+    {
+      "square": 25,
+      "name": "B&O Railroad",
+      "landings": 1852
+    },
+    {
+      "square": 22,
+      "name": "Chance 2",
+      "landings": 1842
+    },
+    {
+      "square": 18,
+      "name": "Tennessee Ave",
+      "landings": 1841
+    },
+    {
+      "square": 20,
+      "name": "Free Parking",
+      "landings": 1834
+    },
+    {
+      "square": 16,
+      "name": "St. James Place",
+      "landings": 1826
+    },
+    {
+      "square": 19,
+      "name": "New York Ave",
+      "landings": 1787
+    },
+    {
+      "square": 24,
+      "name": "Illinois Ave",
+      "landings": 1784
+    },
+    {
+      "square": 29,
+      "name": "Marvin Gardens",
+      "landings": 1773
+    },
+    {
+      "square": 27,
+      "name": "Ventnor Ave",
+      "landings": 1771
+    },
+    {
+      "square": 28,
+      "name": "Water Works",
+      "landings": 1757
+    },
+    {
+      "square": 32,
+      "name": "North Carolina Ave",
+      "landings": 1754
+    },
+    {
+      "square": 31,
+      "name": "Pacific Ave",
+      "landings": 1750
+    },
+    {
+      "square": 26,
+      "name": "Atlantic Ave",
+      "landings": 1740
+    },
+    {
+      "square": 14,
+      "name": "Virginia Ave",
+      "landings": 1737
+    },
+    {
+      "square": 23,
+      "name": "Indiana Ave",
+      "landings": 1733
+    },
+    {
+      "square": 21,
+      "name": "Kentucky Ave",
+      "landings": 1719
+    },
+    {
+      "square": 12,
+      "name": "Electric Company",
+      "landings": 1661
+    },
+    {
+      "square": 15,
+      "name": "Pennsylvania Railroad",
+      "landings": 1661
+    },
+    {
+      "square": 33,
+      "name": "Community Chest 3",
+      "landings": 1659
+    },
+    {
+      "square": 7,
+      "name": "Chance 1",
+      "landings": 1609
+    },
+    {
+      "square": 13,
+      "name": "States Ave",
+      "landings": 1599
+    },
+    {
+      "square": 35,
+      "name": "Short Line Railroad",
+      "landings": 1593
+    },
+    {
+      "square": 11,
+      "name": "St. Charles Place",
+      "landings": 1562
+    },
+    {
+      "square": 34,
+      "name": "Pennsylvania Ave",
+      "landings": 1559
+    },
+    {
+      "square": 8,
+      "name": "Vermont Ave",
+      "landings": 1549
+    },
+    {
+      "square": 4,
+      "name": "Income Tax",
+      "landings": 1537
+    },
+    {
+      "square": 3,
+      "name": "Baltic Ave",
+      "landings": 1522
+    },
+    {
+      "square": 9,
+      "name": "Connecticut Ave",
+      "landings": 1515
+    },
+    {
+      "square": 6,
+      "name": "Oriental Ave",
+      "landings": 1496
+    },
+    {
+      "square": 1,
+      "name": "Mediterranean Ave",
+      "landings": 1494
+    },
+    {
+      "square": 5,
+      "name": "Reading Railroad",
+      "landings": 1489
+    },
+    {
+      "square": 2,
+      "name": "Community Chest 1",
+      "landings": 1473
+    },
+    {
+      "square": 36,
+      "name": "Chance 3",
+      "landings": 1470
+    },
+    {
+      "square": 38,
+      "name": "Luxury Tax",
+      "landings": 1456
+    },
+    {
+      "square": 0,
+      "name": "GO",
+      "landings": 1428
+    },
+    {
+      "square": 39,
+      "name": "Boardwalk",
+      "landings": 1424
+    },
+    {
+      "square": 37,
+      "name": "Park Place",
+      "landings": 1390
+    },
+    {
+      "square": 30,
+      "name": "Go To Jail",
+      "landings": 0
+    }
+  ],
+  "group_landings": {
+    "brown": 3016,
+    "light_blue": 4560,
+    "pink": 4898,
+    "orange": 5454,
+    "red": 5236,
+    "yellow": 5284,
+    "green": 5063,
+    "dark_blue": 2814,
+    "railroad": 6595,
+    "utility": 3418
+  }
+}
