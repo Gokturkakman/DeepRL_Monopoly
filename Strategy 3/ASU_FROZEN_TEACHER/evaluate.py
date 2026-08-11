@@ -226,7 +226,7 @@ class AgentFactory:
                 f"Incompatible {kind.upper()} checkpoint {path}: expected a mapping"
             )
         expected = {
-            "format_version": 3,
+            "format_version": 4 if kind == "ddqn" else 3,
             "ruleset": RULESET_VERSION,
             "state_dim": STATE_DIM,
             "action_dim": ACTION_SPACE_SIZE,
@@ -237,7 +237,8 @@ class AgentFactory:
                 f"Incompatible {kind.upper()} checkpoint metadata at {path}: "
                 f"{actual}; expected {expected}"
             )
-        for key in ("player_id", "hybrid", "hidden_dim"):
+        required = ("player_id", "hybrid", "hidden_dim") + (("dueling",) if kind == "ddqn" else ())
+        for key in required:
             if key not in payload:
                 raise ValueError(
                     f"Incompatible {kind.upper()} checkpoint {path}: missing {key}"
@@ -251,12 +252,16 @@ class AgentFactory:
             return self._loaded[key]
         if spec.kind in ("ppo", "ddqn"):
             metadata = self._torch_metadata(spec.checkpoint, spec.kind)
+            extra_kwargs = (
+                {"dueling": bool(metadata["dueling"])} if spec.kind == "ddqn" else {}
+            )
             constructor = PPOAgent if spec.kind == "ppo" else DDQNAgent
             agent = constructor(
                 player_id=int(metadata["player_id"]),
                 hybrid=bool(metadata["hybrid"]),
                 hidden_dim=int(metadata["hidden_dim"]),
                 device="cpu",
+                **extra_kwargs,
             )
             try:
                 agent.load(str(spec.checkpoint))

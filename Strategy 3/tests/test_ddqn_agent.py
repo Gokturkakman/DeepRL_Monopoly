@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
 from monopoly_game_engine.agent_ddqn import DDQNAgent  # noqa: E402
 from monopoly_game_engine.env import MonopolyEnv, TradeOffer  # noqa: E402
-from monopoly_game_engine.networks import DDQNNetwork  # noqa: E402
+from monopoly_game_engine.networks import DDQNNetwork, DuelingDDQNNetwork  # noqa: E402
 from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 from monopoly_game_engine.train import run_episode  # noqa: E402
 
@@ -30,6 +30,39 @@ class DDQNAgentTests(unittest.TestCase):
         self.assertEqual(network.net[0].out_features, 1024)
         self.assertEqual(network.net[2].out_features, 512)
         self.assertEqual(network.net[4].out_features, ACTION_SPACE_SIZE)
+
+    def test_dueling_network_output_shape_and_finite(self) -> None:
+        network = DuelingDDQNNetwork(hidden_dim=16)
+        state = torch.zeros(3, STATE_DIM)
+        q_values = network(state)
+        self.assertEqual(q_values.shape, (3, ACTION_SPACE_SIZE))
+        self.assertTrue(torch.isfinite(q_values).all())
+
+    def test_dueling_advantage_is_zero_mean_per_state(self) -> None:
+        # Q = V + (A - mean(A)) => Q's per-state deviation from its own mean
+        # equals A's deviation from its mean; summing Q - V over actions
+        # must be ~0 for every row, which is the whole point of subtracting
+        # the mean advantage (see DuelingDDQNNetwork docstring).
+        network = DuelingDDQNNetwork(hidden_dim=16)
+        state = torch.randn(5, STATE_DIM)
+        with torch.no_grad():
+            features = network.trunk(state)
+            value = network.value_stream(features)
+            q_values = network(state)
+        self.assertTrue(torch.allclose((q_values - value).sum(dim=-1), torch.zeros(5), atol=1e-4))
+
+    def test_default_ddqn_agent_is_dueling(self) -> None:
+        agent = DDQNAgent(0, hidden_dim=16, device="cpu")
+        self.assertIsInstance(agent.online_net, DuelingDDQNNetwork)
+
+    def test_checkpoint_rejects_dueling_architecture_mismatch(self) -> None:
+        agent = DDQNAgent(0, hidden_dim=16, dueling=True, device="cpu")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ddqn.pt"
+            agent.save(str(path))
+            mismatched = DDQNAgent(0, hidden_dim=16, dueling=False, device="cpu")
+            with self.assertRaises(ValueError):
+                mismatched.load(str(path))
 
     def test_next_action_argmax_respects_legal_mask(self) -> None:
         q_values = torch.zeros(2, ACTION_SPACE_SIZE)
@@ -193,7 +226,7 @@ class DDQNAgentTests(unittest.TestCase):
         self.assertEqual(restored.exploration_mode, agent.exploration_mode)
         self.assertEqual(restored.decision_penalty, agent.decision_penalty)
         self.assertEqual(len(restored.buffer), len(agent.buffer))
-        self.assertEqual(restored.buffer.buffer[0][5], agent.buffer.buffer[0][5])
+        self.assertEqual(restored.buffer.data[0][5], agent.buffer.data[0][5])
         for expected, actual in zip(
             agent.online_net.parameters(), restored.online_net.parameters()
         ):

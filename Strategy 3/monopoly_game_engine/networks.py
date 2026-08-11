@@ -119,6 +119,22 @@ class CriticNetwork(nn.Module):
         return self.net(state).squeeze(-1)
 
 
+def _q_network_get_action(
+    network: nn.Module, state: np.ndarray, allowed_actions: list, epsilon: float = 0.0
+):
+    """ε-greedy action selection with action masking, shared by every Q-network."""
+    if random.random() < epsilon:
+        return random.choice(allowed_actions)
+    device = next(network.parameters()).device
+    state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+    with torch.inference_mode():
+        q_values = network(state_t).squeeze(0)
+    mask = torch.full((ACTION_SPACE_SIZE,), float("-inf"), device=device)
+    mask[allowed_actions] = 0.0
+    q_masked = q_values + mask
+    return q_masked.argmax().item()
+
+
 class DDQNNetwork(nn.Module):
     """
     Double DQN Q-network from Appendix B-B of the paper.
@@ -143,16 +159,53 @@ class DDQNNetwork(nn.Module):
     def get_action(
         self, state: np.ndarray, allowed_actions: list, epsilon: float = 0.0
     ):
-        """ε-greedy action selection with action masking."""
-        if random.random() < epsilon:
-            return random.choice(allowed_actions)
-        device = next(self.parameters()).device
-        state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-        with torch.inference_mode():
-            q_values = self.forward(state_t).squeeze(0)
-        mask = torch.full(
-            (ACTION_SPACE_SIZE,), float("-inf"), device=device
+        return _q_network_get_action(self, state, allowed_actions, epsilon)
+
+
+class DuelingDDQNNetwork(nn.Module):
+    """
+    Dueling architecture (Wang et al. 2016, arXiv:1511.06581). A shared
+    trunk feeds two heads: scalar state-value V(s) and per-action advantage
+    A(s,a); Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a)).
+
+    Why this helps here specifically: 2,958 actions means most states have
+    Q-values that barely vary across actions -- the state's value dominates
+    (e.g. "I'm bankrupt next roll" matters far more than which of several
+    similar trade offers gets picked). A plain Q-network has to relearn V(s)
+    redundantly inside every one of those 2,958 outputs; splitting it into
+    its own head lets V(s) update from every action taken in that state
+    instead of only the one sampled, and should generalize faster across
+    the trade-exchange actions that dominate the space
+    (`REPO_STUDY_NOTES.md` §6). Subtracting the mean advantage (rather than
+    the max, the paper's alternative) keeps both heads on a comparable
+    scale and is what the paper reports as more stable in practice.
+    """
+
+    def __init__(self, hidden_dim: int = 1024):
+        super().__init__()
+        stream_dim = hidden_dim // 2
+        self.trunk = nn.Sequential(
+            nn.Linear(STATE_DIM, hidden_dim),
+            nn.ReLU(),
         )
-        mask[allowed_actions] = 0.0
-        q_masked = q_values + mask
-        return q_masked.argmax().item()
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_dim, stream_dim),
+            nn.ReLU(),
+            nn.Linear(stream_dim, 1),
+        )
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(hidden_dim, stream_dim),
+            nn.ReLU(),
+            nn.Linear(stream_dim, ACTION_SPACE_SIZE),
+        )
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        features = self.trunk(state)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        return value + (advantage - advantage.mean(dim=-1, keepdim=True))
+
+    def get_action(
+        self, state: np.ndarray, allowed_actions: list, epsilon: float = 0.0
+    ):
+        return _q_network_get_action(self, state, allowed_actions, epsilon)

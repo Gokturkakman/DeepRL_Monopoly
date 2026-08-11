@@ -4,6 +4,7 @@ import hashlib
 import json
 import pickle
 import random
+import sys
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
@@ -13,7 +14,10 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from ASU_FROZEN_TEACHER import (
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from ASU_FROZEN_TEACHER import (  # noqa: E402
     ASURolloutV1,
     ASUValueV1,
     CandidateScore,
@@ -28,7 +32,7 @@ from ASU_FROZEN_TEACHER import (
     long_rent_projection,
     monopoly_value,
 )
-from ASU_FROZEN_TEACHER.evaluate import (
+from ASU_FROZEN_TEACHER.evaluate import (  # noqa: E402
     AgentFactory,
     AgentSpec,
     _ScriptedAdapter,

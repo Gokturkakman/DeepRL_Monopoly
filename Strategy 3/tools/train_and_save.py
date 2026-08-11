@@ -164,6 +164,32 @@ def main():
         ),
     )
     parser.add_argument(
+        "--no-dueling",
+        action="store_true",
+        help="DDQN only: use the plain (non-dueling) Q-network instead of the "
+        "default value/advantage split.",
+    )
+    parser.add_argument(
+        "--per-alpha",
+        type=float,
+        default=None,
+        help="DDQN only: prioritized-replay priority exponent (default None: 0.6). "
+        "0 = uniform sampling, higher = more aggressive prioritization.",
+    )
+    parser.add_argument(
+        "--per-beta-start",
+        type=float,
+        default=None,
+        help="DDQN only: initial importance-sampling correction (default None: 0.4), "
+        "annealed to 1.0 over --per-beta-frames gradient steps.",
+    )
+    parser.add_argument(
+        "--per-beta-frames",
+        type=int,
+        default=None,
+        help="DDQN only: gradient steps over which beta anneals to 1.0 (default None: 100000).",
+    )
+    parser.add_argument(
         "--log-every",
         type=int,
         default=None,
@@ -240,7 +266,7 @@ def main():
         asu_factory = partial(ASUOpponent, decision_timeout=args.asu_decision_timeout)
 
     self_play_pool = None
-    if args.self_play_probability > 0 and args.algo == "ddqn":
+    if args.self_play_probability > 0:
         from monopoly_game_engine.self_play import SelfPlayPool
 
         self_play_pool = SelfPlayPool(max_size=args.self_play_pool_size)
@@ -289,6 +315,10 @@ def main():
             held_out_eval_games=args.held_out_eval_games,
             asu_factory=asu_factory,
             asu_probability=args.asu_opponent_probability,
+            self_play_pool=self_play_pool,
+            self_play_probability=args.self_play_probability,
+            self_play_epsilon=args.self_play_epsilon,
+            self_play_register_every=args.self_play_register_every,
         )
     else:
         ddqn_kwargs = {}
@@ -300,6 +330,14 @@ def main():
             ddqn_kwargs["lr"] = args.lr
         if args.target_update_freq_steps is not None:
             ddqn_kwargs["target_update_freq_steps"] = args.target_update_freq_steps
+        if args.no_dueling:
+            ddqn_kwargs["dueling"] = False
+        if args.per_alpha is not None:
+            ddqn_kwargs["per_alpha"] = args.per_alpha
+        if args.per_beta_start is not None:
+            ddqn_kwargs["per_beta_start"] = args.per_beta_start
+        if args.per_beta_frames is not None:
+            ddqn_kwargs["per_beta_frames"] = args.per_beta_frames
         agent, history = train_ddqn(
             hybrid=args.hybrid,
             player_id=0,

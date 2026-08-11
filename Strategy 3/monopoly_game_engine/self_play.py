@@ -23,24 +23,32 @@ import torch
 
 from .actions import ActionType
 from .agent_ppo import fixed_accept_trade_decision, fixed_buy_decision
-from .networks import DDQNNetwork
+from .networks import ActorNetwork, DDQNNetwork, DuelingDDQNNetwork
 
 HYBRID_FIXED_ACTIONS = {int(ActionType.BUY_PROPERTY), int(ActionType.ACCEPT_TRADE)}
 
 
 class SelfPlayOpponent:
-    """Frozen snapshot of a past learner checkpoint, played epsilon-greedy."""
+    """
+    Frozen snapshot of a past learner checkpoint. DDQN snapshots play
+    epsilon-greedy (see module docstring); PPO snapshots sample from the
+    actor's own policy distribution, which is non-deterministic already, so
+    ``epsilon`` has no effect there -- it exists only so both kinds share
+    one call signature.
+    """
 
     def __init__(
         self,
         player_id: int,
-        network: DDQNNetwork,
+        network,
+        kind: str,
         hybrid: bool,
         epsilon: float = 0.15,
         rng: Optional[random.Random] = None,
     ):
         self.player_id = player_id
         self.network = network
+        self.kind = kind
         self.hybrid = hybrid
         self.epsilon = epsilon
         self._rng = rng if rng is not None else random
@@ -70,15 +78,20 @@ class SelfPlayOpponent:
         if not nn_allowed:
             nn_allowed = [int(ActionType.DO_NOTHING)]
         state = env._get_state(pid)
+        if self.kind == "ppo":
+            action, _log_prob = self.network.get_action(state, nn_allowed)
+            return action
         return self.network.get_action(state, nn_allowed, self.epsilon)
 
 
 class SelfPlayPool:
     """
-    Rotating snapshots of a DDQNAgent's online_net. ``register(agent)``
-    copies current weights into memory (and optionally disk); the pool
-    keeps the most recent ``max_size`` snapshots so training samples a
-    *history* of past selves rather than only the newest one.
+    Rotating snapshots of a learner's own network -- DDQNAgent's
+    ``online_net`` or PPOAgent's ``actor`` (its critic isn't needed to act,
+    so it's not snapshotted). ``register(agent)`` copies current weights
+    into memory (and optionally disk); the pool keeps the most recent
+    ``max_size`` snapshots so training samples a *history* of past selves
+    rather than only the newest one.
     """
 
     def __init__(self, max_size: int = 8, save_dir: Optional[str] = None):
@@ -89,12 +102,27 @@ class SelfPlayPool:
         self._snapshots: List[dict] = []
 
     def register(self, agent) -> None:
-        state = {k: v.detach().cpu().clone() for k, v in agent.online_net.state_dict().items()}
+        if hasattr(agent, "online_net"):
+            kind, source_net = "ddqn", agent.online_net
+        elif hasattr(agent, "actor"):
+            kind, source_net = "ppo", agent.actor
+        else:
+            raise TypeError(
+                f"{type(agent).__name__} has neither 'online_net' (DDQN) nor "
+                "'actor' (PPO) -- SelfPlayPool doesn't know what to snapshot"
+            )
+        state = {k: v.detach().cpu().clone() for k, v in source_net.state_dict().items()}
         snapshot = {
+            "kind": kind,
             "state_dict": state,
             "hidden_dim": agent.hidden_dim,
             "hybrid": agent.hybrid,
             "games_trained": agent.games_trained,
+            # DDQN-only: whether online_net is the dueling architecture --
+            # loading a dueling state_dict into a plain DDQNNetwork (or vice
+            # versa) fails on key mismatch, so this has to travel with the
+            # snapshot rather than being assumed.
+            "dueling": getattr(agent, "dueling", False),
         }
         self._snapshots.append(snapshot)
         if len(self._snapshots) > self.max_size:
@@ -109,11 +137,16 @@ class SelfPlayPool:
         self, player_id: int, rng: random.Random, epsilon: float = 0.15
     ) -> SelfPlayOpponent:
         snapshot = rng.choice(self._snapshots)
-        network = DDQNNetwork(hidden_dim=snapshot["hidden_dim"])
+        kind = snapshot["kind"]
+        if kind == "ppo":
+            network_cls = ActorNetwork
+        else:
+            network_cls = DuelingDDQNNetwork if snapshot["dueling"] else DDQNNetwork
+        network = network_cls(hidden_dim=snapshot["hidden_dim"])
         network.load_state_dict(snapshot["state_dict"])
         network.eval()
         return SelfPlayOpponent(
-            player_id, network, snapshot["hybrid"], epsilon=epsilon, rng=rng
+            player_id, network, kind, snapshot["hybrid"], epsilon=epsilon, rng=rng
         )
 
 

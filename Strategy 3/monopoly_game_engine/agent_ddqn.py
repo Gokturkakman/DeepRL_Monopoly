@@ -12,7 +12,6 @@ Hybrid mode: BUY_PROPERTY and ACCEPT_TRADE handled by fixed rules.
 
 import os
 import random
-from collections import deque
 from pathlib import Path
 from typing import List
 
@@ -21,97 +20,15 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .networks import DDQNNetwork
+from .networks import DDQNNetwork, DuelingDDQNNetwork
+from .prioritized_replay import PrioritizedReplayBuffer
 from .actions import ACTION_SPACE_SIZE, OFFSETS, ActionType
 from .constants import RULESET_VERSION
 from .agent_ppo import fixed_buy_decision, fixed_accept_trade_decision
 from .state import STATE_DIM
 
 
-CHECKPOINT_VERSION = 3
-
-
-# ── Replay Buffer ─────────────────────────────────────────────────────────────
-
-class ReplayBuffer:
-    """
-    ``teacher_action`` is ``None`` for ordinary self-play transitions. It
-    exists to support a generic DQfD-style large-margin auxiliary term in
-    DDQNAgent.update() (default weight 0.0, i.e. off) for demo transitions
-    from a *compliant* source only -- competition rules forbid training on
-    ASU's output (opponent play against ASU is fine, cloning it is not).
-    When active, it is a supervised auxiliary term, not a second Bellman
-    target, so it never changes what a transition's reward/next_state mean.
-    """
-
-    def __init__(self, capacity: int = 10_000):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state, action, reward, next_state, done, next_allowed, teacher_action=None):
-        self.buffer.append(
-            (
-                np.asarray(state, dtype=np.float32).copy(),
-                int(action),
-                float(reward),
-                np.asarray(next_state, dtype=np.float32).copy(),
-                bool(done),
-                tuple(int(a) for a in next_allowed),
-                None if teacher_action is None else int(teacher_action),
-            )
-        )
-
-    def sample(self, batch_size: int):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones, next_allowed, teacher_actions = zip(*batch)
-        return (
-            torch.FloatTensor(np.array(states)),
-            torch.LongTensor(actions),
-            torch.FloatTensor(rewards),
-            torch.FloatTensor(np.array(next_states)),
-            torch.FloatTensor(dones),
-            next_allowed,
-            teacher_actions,
-        )
-
-    def state_dict(self) -> dict:
-        items = list(self.buffer)
-        states = (
-            np.stack([x[0] for x in items])
-            if items
-            else np.empty((0, STATE_DIM), dtype=np.float32)
-        )
-        next_states = (
-            np.stack([x[3] for x in items])
-            if items
-            else np.empty((0, STATE_DIM), dtype=np.float32)
-        )
-        return {
-            "capacity": self.buffer.maxlen,
-            "states": torch.from_numpy(states),
-            "actions": torch.tensor([x[1] for x in items], dtype=torch.long),
-            "rewards": torch.tensor([x[2] for x in items], dtype=torch.float32),
-            "next_states": torch.from_numpy(next_states),
-            "dones": torch.tensor([x[4] for x in items], dtype=torch.bool),
-            "next_allowed": [list(x[5]) for x in items],
-            "teacher_actions": [x[6] for x in items],
-        }
-
-    def load_state_dict(self, payload: dict) -> None:
-        self.buffer = deque(maxlen=int(payload["capacity"]))
-        teacher_actions = payload.get("teacher_actions") or [None] * len(payload["actions"])
-        for state, action, reward, next_state, done, next_allowed, teacher_action in zip(
-            payload["states"].numpy(),
-            payload["actions"].tolist(),
-            payload["rewards"].tolist(),
-            payload["next_states"].numpy(),
-            payload["dones"].tolist(),
-            payload["next_allowed"],
-            teacher_actions,
-        ):
-            self.push(state, action, reward, next_state, done, next_allowed, teacher_action)
-
-    def __len__(self):
-        return len(self.buffer)
+CHECKPOINT_VERSION = 4
 
 
 # ── DDQN Agent ────────────────────────────────────────────────────────────────
@@ -144,6 +61,11 @@ class DDQNAgent:
         distill_weight_start: float = 0.0,
         distill_decay: float = 0.999,
         distill_weight_end: float = 0.0,
+        dueling: bool = True,
+        per_alpha: float = 0.6,
+        per_beta_start: float = 0.4,
+        per_beta_frames: int = 100_000,
+        per_priority_eps: float = 1e-3,
         device: str = "auto",
     ):
         self.player_id       = player_id
@@ -178,6 +100,7 @@ class DDQNAgent:
         self.exploration_mode = exploration_mode
         self.decision_penalty = decision_penalty
         self.hidden_dim = hidden_dim
+        self.dueling = dueling
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is not available")
         self.device = torch.device(
@@ -185,13 +108,20 @@ class DDQNAgent:
             "cpu" if device == "auto" else device
         )
 
-        self.online_net = DDQNNetwork(hidden_dim).to(self.device)
-        self.target_net = DDQNNetwork(hidden_dim).to(self.device)
+        network_cls = DuelingDDQNNetwork if dueling else DDQNNetwork
+        self.online_net = network_cls(hidden_dim).to(self.device)
+        self.target_net = network_cls(hidden_dim).to(self.device)
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.online_net.parameters(), lr=lr)
-        self.buffer    = ReplayBuffer(buffer_capacity)
+        self.buffer    = PrioritizedReplayBuffer(
+            capacity=buffer_capacity,
+            alpha=per_alpha,
+            beta_start=per_beta_start,
+            beta_frames=per_beta_frames,
+            priority_eps=per_priority_eps,
+        )
 
         self.step_count = 0
         self.games_trained = 0
@@ -273,9 +203,8 @@ class DDQNAgent:
     def add_win_loss(self, won: bool):
         """Add win/loss bonus to the most recent transition."""
         if self.win_loss_bonus != 0 and len(self.buffer) > 0:
-            s, a, r, ns, d, allowed, teacher_action = self.buffer.buffer[-1]
             bonus = self.win_loss_bonus if won else -self.win_loss_bonus
-            self.buffer.buffer[-1] = (s, a, r + bonus, ns, d, allowed, teacher_action)
+            self.buffer.mutate_last_reward(bonus)
 
     @staticmethod
     def _masked_argmax(
@@ -320,14 +249,16 @@ class DDQNAgent:
         if len(self.buffer) < self.batch_size:
             return {}
 
-        states, actions, rewards, next_states, dones, next_allowed, teacher_actions = (
-            self.buffer.sample(self.batch_size)
-        )
+        (
+            states, actions, rewards, next_states, dones, next_allowed, teacher_actions,
+            leaf_indices, is_weights,
+        ) = self.buffer.sample(self.batch_size)
         states = states.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
+        is_weights = is_weights.to(self.device)
 
         # Current Q-values
         q_all = self.online_net(states)
@@ -343,7 +274,11 @@ class DDQNAgent:
             ).squeeze(1)
             targets = rewards + self.gamma * next_q * (1 - dones)
 
-        bellman_loss = nn.MSELoss()(q_values, targets)
+        # Per-sample TD-error drives both the loss weighting (importance
+        # sampling corrects for prioritized-vs-uniform sampling bias) and
+        # the buffer's priority update below (Schaul et al. 2016 §3.3).
+        td_error = q_values - targets
+        bellman_loss = (is_weights * td_error.pow(2)).mean()
 
         margin_loss, n_demo = (
             self._margin_loss(q_all, teacher_actions)
@@ -356,6 +291,8 @@ class DDQNAgent:
         loss.backward()
         nn.utils.clip_grad_norm_(self.online_net.parameters(), 1.0)
         self.optimizer.step()
+
+        self.buffer.update_priorities(leaf_indices, td_error.detach().abs().cpu().numpy())
 
         self.gradient_steps += 1
         if (
@@ -386,6 +323,7 @@ class DDQNAgent:
                 "player_id": self.player_id,
                 "hybrid": self.hybrid,
                 "hidden_dim": self.hidden_dim,
+                "dueling": self.dueling,
                 "step_count": self.step_count,
                 "gradient_steps": self.gradient_steps,
                 "games_trained": self.games_trained,
@@ -429,6 +367,7 @@ class DDQNAgent:
             "player_id": self.player_id,
             "hybrid": self.hybrid,
             "hidden_dim": self.hidden_dim,
+            "dueling": self.dueling,
         }
         actual = {key: ckpt.get(key) for key in expected}
         if actual != expected:

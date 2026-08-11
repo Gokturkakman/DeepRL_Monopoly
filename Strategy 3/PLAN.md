@@ -187,6 +187,26 @@ kod hatası değil) 0 oyunda durdurdu. `CLAUDE.md` kuralı gereği bu eşiği
 büyük bir koşuyu yerelde zorlamak için yükseltmedim. Sonuç: mekanik olarak
 flag'ler çalışıyor, gerçek 1.000–2.000 oyunluk doğrulama Colab'da yapılacak
 (zaten proje kuralı bunu gerektiriyor).
+
+### DDQN mimari: Dueling + Prioritized Experience Replay — kararlaştırıldı, Colab'da doğrulanacak
+
+`DDQNAgent` artık varsayılan olarak Dueling ağ mimarisini
+(`monopoly_game_engine/networks.py:DuelingDDQNNetwork` — V(s) ve A(s,a)
+ayrı head'ler, Q = V + (A - mean(A))) ve sum-tree tabanlı prioritized
+replay'i (`monopoly_game_engine/prioritized_replay.py`) kullanıyor
+(`dueling=True` sabit varsayılan, eski davranışa dönmek için
+`--no-dueling`). Gerekçe: 2.958 aksiyonun çoğunda Q-değerleri neredeyse
+aynı (state'in kendisi domine ediyor, hangi trade seçildiği değil) —
+Dueling bunu ayrıştırıyor. PER ise TD-hatası büyük geçişlere (iflas
+öncesi, büyük trade) orantılı örnekleme yapıp uniform replay'in eşit
+ağırlık verdiği düşük-sinyal geçişlere harcanan gradyanı azaltıyor.
+Checkpoint formatı `format_version=4`'e yükseldi (eski v3 DDQN
+checkpoint'leri reddedilir, yeniden eğitim gerekir); `dueling` bayrağı
+`hybrid`/`hidden_dim` gibi checkpoint metadata'sında taşınıyor ve
+mismatch'te yüklemeyi reddediyor. `--per-alpha`, `--per-beta-start`,
+`--per-beta-frames` ile ayarlanabilir. 78 birim test (yeni
+`test_prioritized_replay.py` dahil) yeşil; gerçek win-rate etkisi henüz
+Colab'da ölçülmedi.
 - **`c_puct` ve progressive widening** (sadece Seçenek B / MonopolyZero
   yolunda): `c_puct`, search'ün "bilinen iyi aksiyonu tekrar dene" ile
   "az denenmiş aksiyonu keşfet" arasındaki dengesini ayarlar. Progressive
@@ -204,7 +224,7 @@ flag'ler çalışıyor, gerçek 1.000–2.000 oyunluk doğrulama Colab'da yapıl
 |---|---|---|
 | Seyrek, gecikmeli reward, uzun horizon | Search (PUCT), lookahead değeri | **Yok** — `monopoly_bench`/search §2'de elendi. Karşılığı yok. |
 | 2.958 aksiyonun 2.268'i trade-exchange, uzayı domine ediyor | Section-balanced exploration | **Var** — DDQN'de zaten kodlu (`REPO_STUDY_NOTES.md` §6), `monopoly_bench`'e bağlı değil. |
-| Opponent non-stationarity (3 sabit rakip) | Self-play snapshot pool | **Var** — `monopoly_game_engine.self_play.SelfPlayPool` + `--self-play-probability` (DDQN, `train_and_save.py`). ASU'ya hiç dokunmuyor, tamamen legal. |
+| Opponent non-stationarity (3 sabit rakip) | Self-play snapshot pool | **Var** — `monopoly_game_engine.self_play.SelfPlayPool` + `--self-play-probability` (`train_and_save.py`, hem PPO hem DDQN — pool artık agent tipini algılayıp doğru ağı (ActorNetwork/DDQNNetwork) snapshot'lıyor). ASU'ya hiç dokunmuyor, tamamen legal. |
 | Hyperparametreler 10.000 oyun için, bütçe 1.000–2.000 | Yeniden ayarlanmış LR/target-sync | **Var** — §3'teki DDQN retuning. |
 
 Saf PPO/DDQN'i **eski** hyperparametrelerle tekrar çalıştırmak hâlâ önerilmiyor
