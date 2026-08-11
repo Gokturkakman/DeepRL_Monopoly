@@ -72,6 +72,48 @@ Full architecture, vocabulary, and a traced example decision:
   MonopolyZero search): restore global RNG state after the clone and never
   mutate the caller's live environment.
 
+## Competition rules (team channel, "Cem Abi", 2026-08-10/11)
+
+Relayed informally over chat; quoted/paraphrased here so they're not lost.
+Where the source message was ambiguous, that is noted rather than resolved
+by guessing. These are in addition to, not a replacement for, the Hard
+Rules above — where they overlap (ASU), they agree with and confirm the
+Hard Rules' reading.
+
+- **Using ASU directly is forbidden** ("ASU'yu birebir kullanmak yasak").
+- **Playing against ASU is allowed** (you vs B vs C vs ASU is fine), **but
+  literally cloning ASU's output is forbidden** ("ASU'ya karşı
+  oynayabilirsiniz ama ASU'yu birebir output klonlamak yasak"). This is the
+  same distinction as the Hard Rules' "playing against ASU is allowed;
+  training on its output is not" — it directly confirms PLAN.md §2's
+  corrected reading (opponent seat only, no bootstrap/imitation).
+- **Winning criterion**: not most matches won, but the highest *overall* win
+  rate against everyone -- the most generalizable model. Since every team
+  will likely try to imitate/approximate ASU, deliberately building an
+  "anti-ASU" model (diverging from where others converge) was suggested as
+  a smart strategy. This is a strategic suggestion, not a rule.
+- **Rules may still change until Friday** (this week) -- "monopoly oynuyoruz
+  poker değil, ayak üstü tüm düzeni değiştirirsek kimse oyuna
+  odaklanmayacak, değişebilir diye cumaya kadar." Treat anything in this
+  section as provisional until then.
+- **Unclear, not resolved**: "emrullahın kuralları ... bu gece ... askıya
+  alıyorum" -- some other, unspecified rule set ("Emrullah's rules") was
+  described as suspended for one night. What that rule set contained is not
+  in the relayed message; do not assume it is void beyond that night without
+  checking with the team.
+- **Open question, not yet answered**: whether submitting a hand-written
+  (non-RL, non-ASU) algorithm is allowed at all. The relayed message treats
+  an open-sourced, group-linked algorithm submission and an explicit hybrid
+  (a small hand-written component for a bounded set of edge cases, RL for
+  the rest) as plausibly acceptable, but this was framed as a question to
+  the team, not a settled ruling.
+- **Compute**: Colab Pro was reported to run 5-6 instances in parallel and to
+  provide 100+ hours/month; a "Colab CLI" was mentioned as a way to run
+  Claude Code there. Unverified by us -- relayed as-is.
+- Incentive (Cem Abi's own initiative, outside the competition rules): an
+  AWS credit reward for whoever writes a paper or builds a benchmark from
+  this work.
+
 ## Known-hard problem, current state
 
 Both the completed DDQN and PPO v2 baselines finished near 0% win rate

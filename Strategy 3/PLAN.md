@@ -58,7 +58,36 @@ Bu seçim §5 ve §7'deki arena/eval kurulumunu belirler: eğitilen policy,
 ASU değil, Fixed-A/B/C'ye karşı test edilir; ASU sadece training'de
 opponent/teacher rolünde kullanılır (§2), eval'de rakip değildir.
 
-## 2. ASU'nun rolü — KARARLAŞTIRILDI: Seçenek B (opponent + decaying bootstrap)
+## 2. ASU'nun rolü — DÜZELTME: Seçenek A (sadece opponent koltuğu)
+
+**Bu bölüm daha önce "Seçenek B, legal, kod doğruluyor" diyordu — o yanlıştı,
+düzeltiliyor.** Gerekçe: `monopoly_bench.training.Trainer`, elinde checkpoint
+olmayan her taze çalıştırmada `__init__` içinde otomatik olarak
+`self._bootstrap()` çağırıyor
+([`training.py:640-642`](monopoly_bench/training.py)) — bunu atlayacak
+hiçbir CLI flag'i veya parametre yok; `--asu-expert-data` vermesen bile
+`Trainer` kendi kendine ASU'yu oynatıp veri topluyor
+([`training.py:650-666`](monopoly_bench/training.py)), sonra ağın policy
+head'ini 2000 gradient adımı (`value_updates` varsayılanı) boyunca ASU'nun
+seçtiği aksiyona karşı cross-entropy ile eğitiyor
+([`training.py:712-724`](monopoly_bench/training.py), `bootstrap_asu_expert`).
+`bootstrap_games`/`value_updates` gibi sayaçları sıfırlamaya çalışsan bile
+`TrainingConfig.__post_init__` reddediyor (`min(counts) < 1` kontrolü).
+
+"Ayrı bir faz, self-play değil, azalıyor" savım **ne zaman** sorusuna
+cevaptı, kuralın sorduğu **olur mu** sorusuna değil. CLAUDE.md'nin Hard
+Rules bölümü açık: "PPO, DDQN, CFR, ve MonopolyZero self-play gerçek oyun
+sonucundan öğrenmeli, **ASU'nun seçtiği aksiyondan değil**", tek istisna
+SLM/Gemma. Bootstrap tam olarak bu yasağı ihlal ediyor. Takımın kendi kural
+mesajı da (bkz. `CLAUDE.md` "Competition rules") aynı çizgide: "ASU'ya karşı
+oynayabilirsiniz ama ASU'yu birebir output klonlamak yasak."
+
+Sonuç: **`monopoly_bench`/MonopolyZero self-play track'i tamamen bırakıldı.**
+Kod değiştirilmedi (frozen v1 olarak işaretli, dokunmadık); sadece Strategy 3
+pipeline'ından çıkarıldı. `monopoly_bench` dosyaları repoda referans için
+duruyor ama `Trainer` public API üzerinden kurallara uygun çalıştırılamıyor.
+
+### Seçenek A — sadece opponent koltuğu (şimdi tek seçenek)
 
 Kullanıcı isteği: *"ASU'yu sadece opponent olarak, teacher rolünde
 kullanarak nasıl geçebiliriz"*. Bu cümle iki okumaya açık, ikisi de kodda
@@ -83,32 +112,17 @@ sınırlıyor.
   hızlandıracak hiçbir sinyal eklemez — sadece rakip havuzunu güçlendirir.
   Keşif hâlâ sıfırdan.
 
-### Seçenek B — opponent koltuğu + decaying bootstrap (önerilen)
+### Seçenek B — opponent koltuğu + decaying bootstrap (REDDEDİLDİ)
 
-A'ya ek olarak, self-play başlamadan önce ayrı bir offline ısınma fazı:
-ağın **policy head'i** ASU'nun seçtiği aksiyonu cross-entropy ile taklit
-eder, ama **value head'i her zaman gerçek oyun sonucunu** öğrenir — ASU'nun
-kendi heuristic skorunu değil
-([`monopoly_bench/training.py`](../Strategy%201/monopoly_bench/training.py)
-`collect_asu_examples` / `bootstrap_asu_expert`). Bu ağırlık 8 nesil
-boyunca sıfıra söner; self-play tamamen gerçek sonuçlardan öğrenir.
-
-Bu, `CLAUDE.md`'nin "self-play ASU çıktısından öğrenemez" kuralıyla
-çelişmiyor çünkü bootstrap self-play'in bir parçası değil, self-play
-başlamadan önceki ayrı ve azalan bir fazdır. **Neden önerilen**: bir
-imitasyon-sadece policy, matematiksel olarak öğretmeninin (ASU'nun)
-gücünü aşamaz — kopyaladığı şeyin tavanı budur. AlphaZero'nun insan
-oyunundan güçlü olmasının sebebi de tam olarak bu: kısa bir warm-start +
-self-play + search, öğretmeni **aşabilen** tek bilinen mekanizma. Kod bu
-yüzden zaten decay'i içeriyor — sonsuza kadar ASU'yu taklit etmek hedefte
-değil.
-
-- Artı: sıfırdan keşif yerine hızlı, makul bir başlangıç noktası. 5 günlük
-  bütçede bu fark kritik olabilir (PPO/DDQN'in 2.000 oyunda hâlâ %0
-  olduğunu unutmayın).
-- Eksi: "sadece opponent" ifadesinin en dar okumasını ihlal eder — bootstrap
-  aşamasında ASU'nun aksiyonu gerçekten bir hedef olarak kullanılıyor
-  (decaying da olsa).
+Önceki halde buradaydı: AlphaZero'daki gibi kısa bir warm-start + self-play'in
+öğretmeni aşabileceği savıyla önerilmişti. Sav kavramsal olarak yanlış değil
+(AlphaGo/AlphaZero gerçekten böyle çalışıyor), ama bu repoda **uygulanabilir
+değil** — `monopoly_bench.Trainer`'ın bootstrap'ı yukarıda açıklandığı gibi
+kapatılamıyor, yani "kısa ve kontrollü" bir warm-start olarak sunulamıyor;
+her çalıştırmada koşulsuz devreye giriyor. Uygulamak için `training.py`'a
+bootstrap'ı atlanabilir yapan bir kod değişikliği gerekirdi — bu, "frozen v1"
+olarak işaretlenmiş paylaşılan bir modülü değiştirmek demek, tek başına ayrı
+bir karar ve bu planın kapsamı dışında bırakıldı.
 
 ### Netleştirilmesi gereken üçüncü şey: fine-tune kavramı yanlış yerde
 
@@ -120,15 +134,10 @@ doğrudan çelişir ve ASU'nun gücünü **hiçbir zaman** aşamaz — imitasyon
 tavanı budur. Fine-tune/QLoRA, ASU'yu geçme hedefi için bir aday değil;
 Strategy 3 kapsamı dışında bırakılıyor.
 
-**Seçenek B onaylandı, koşul "legalse" idi — legal, kod bunu doğruluyor:**
-bootstrap `collect_asu_examples`/`bootstrap_asu_expert`
-([`monopoly_bench/training.py`](monopoly_bench/training.py)) self-play'in
-kendisi değil, ondan önceki ayrı ve 8 nesilde sıfıra sönen bir fazdır;
-value head bootstrap sırasında bile gerçek kazananı öğrenir, ASU'nun
-heuristic skorunu değil. Bu, `CLAUDE.md`'nin "self-play ASU çıktısından
-öğrenemez" kuralını ihlal etmez çünkü kural self-play'i hedefler,
-bootstrap'i değil — aynı dosyadaki `_sample_opponents` yorumu bu ayrımı
-doğruluyor. Aşağıdaki bölümler B varsayımıyla yazıldı.
+**Sonuç: Seçenek A.** ASU eğitimde sadece düşük olasılıklı bir opponent
+koltuğu (`--asu-opponent-probability`, `train.py`'nin `_sample_opponents`'ı)
+— hiçbir zaman bir öğrenme hedefi değil. Aşağıdaki bölümler bu düzeltilmiş
+karar üzerinden güncellendi.
 
 ## 3. Kavram primer'i (kullanıcının istediği "önce öğrenmek")
 
@@ -186,44 +195,44 @@ flag'ler çalışıyor, gerçek 1.000–2.000 oyunluk doğrulama Colab'da yapıl
   ailesindeki 2.268 exchange aksiyonu search'ü boğar
   (`REPO_STUDY_NOTES.md` §9).
 
-## 4. Neden PPO/DDQN retry değil, MonopolyZero-tarzı hybrid
+## 4. Neden PPO/DDQN retry değil aynı ayarlarla — ve §2'nin kısıtladığı şey
 
-`CLAUDE.md`, %0 sonucunun 4 sebebini teşhis etmiş. Her biri için somut
-karşı-önlem:
+`CLAUDE.md`, %0 sonucunun 4 sebebini teşhis etmiş. Her biri için karşı-önlem,
+§2'nin düzeltilmesinden sonraki gerçek durum:
 
-| Teşhis edilen sebep | Karşı-önlem (Strategy 3) |
-|---|---|
-| Seyrek, gecikmeli reward, uzun horizon | Search (PUCT), sadece model-free bootstrap yerine her adımda lookahead değeri kullanır |
-| 2.958 aksiyonun 2.268'i trade-exchange, uzayı domine ediyor | Progressive widening + section-balanced sampling (zaten `monopoly_bench`'te var) |
-| Opponent non-stationarity (3 sabit rakip) | Self-play + snapshot pool, rakip sabit kalmaz, ajanla birlikte güçlenir |
-| Hyperparametreler 10.000 oyun için, bütçe 1.000–2.000 | §3'teki gibi yeniden ayarlanmış LR/target-sync/replay + kısa curriculum |
+| Teşhis edilen sebep | Karşı-önlem | Durum |
+|---|---|---|
+| Seyrek, gecikmeli reward, uzun horizon | Search (PUCT), lookahead değeri | **Yok** — `monopoly_bench`/search §2'de elendi. Karşılığı yok. |
+| 2.958 aksiyonun 2.268'i trade-exchange, uzayı domine ediyor | Section-balanced exploration | **Var** — DDQN'de zaten kodlu (`REPO_STUDY_NOTES.md` §6), `monopoly_bench`'e bağlı değil. |
+| Opponent non-stationarity (3 sabit rakip) | Self-play snapshot pool | **Var** — `monopoly_game_engine.self_play.SelfPlayPool` + `--self-play-probability` (DDQN, `train_and_save.py`). ASU'ya hiç dokunmuyor, tamamen legal. |
+| Hyperparametreler 10.000 oyun için, bütçe 1.000–2.000 | Yeniden ayarlanmış LR/target-sync | **Var** — §3'teki DDQN retuning. |
 
-Saf PPO/DDQN'i aynı hyperparametrelerle tekrar çalıştırmak bu tablodaki
-hiçbir satırı değiştirmez — bu yüzden önerilmiyor. `monopoly_bench`
-(MonopolyZero) bu 4 önlemi zaten kısmen kodlamış durumda, ama **sadece
-Strategy 1'de var, Strategy 2'de yok** — bu yüzden §6'da açık bir
-copy/reuse kararı gerekiyor.
+Saf PPO/DDQN'i **eski** hyperparametrelerle tekrar çalıştırmak hâlâ önerilmiyor
+(tablonun son satırı). Ama dürüst olmak gerekirse: search/lookahead
+karşı-önlemi (ilk satır) artık elimizde değil — bu, §2'nin ASU-bootstrap'ı
+reddetmesinin gerçek maliyeti. Kalan üç önlemle (retuned hyperparametreler +
+self-play pool + section-balanced exploration) 2.000 oyunda %0'dan daha
+iyisini yapmak hedef, ama en güçlü teorik karşı-önlemi kaybettik.
 
-Algoritma ailesi açık kaynaklı ve yayınlanmış: AlphaZero
-([arXiv:1712.01815](https://arxiv.org/abs/1712.01815)), PPO
-([arXiv:1707.06347](https://arxiv.org/abs/1707.06347)). Kapalı kaynak
+Kullanılan algoritmalar açık kaynaklı ve yayınlanmış: PPO
+([arXiv:1707.06347](https://arxiv.org/abs/1707.06347)), Double DQN
+([arXiv:1509.06461](https://arxiv.org/abs/1509.06461)). Kapalı kaynak
 bağımlılık yok, hepsi bu repodaki kendi Python koduyla implemente edilmiş.
 
-## 5. Önerilen pipeline (Seçenek B varsayımıyla)
+## 5. Pipeline (Seçenek A)
 
 ```text
-1. PPO warm start        -- mevcut PPO actor/critic ağırlıkları başlangıç noktası
-2. ASU bootstrap (teacher rolü, decaying, 8 nesil)
-                          -- policy head ASU aksiyonunu taklit eder
-                          -- value head HER ZAMAN gerçek kazananı öğrenir
-3. Self-play + snapshot pool + Fixed A-F + ASU (opponent rolü, düşük olasılık)
-                          -- artık hiçbir ASU aksiyonu hedef değil
-                          -- sadece gerçek oyun sonucu
-4. Arena: aday vs. incumbent vs. ASU vs. Fixed A-F
-                          -- istatistiksel + güvenlik gate'i geçmeden promote yok
+1. PPO/DDQN eğitimi, retuned hyperparametreler (§3) +
+   self-play snapshot pool (opponent non-stationarity için) +
+   ASU opponent koltuğu, düşük olasılık (--asu-opponent-probability)
+                          -- ASU'nun hiçbir aksiyonu hiçbir zaman hedef değil
+                          -- sadece gerçek oyun sonucundan öğrenir
+2. Değerlendirme: Fixed-A/B/C'ye karşı, seat-balanced, Wilson interval
+                          -- asu_value_v1'in 72/100'üyle karşılaştırma (§1)
 ```
 
-Seçenek A seçilirse adım 2 tamamen atlanır, adım 1 de opsiyoneldir.
+`monopoly_bench` (arama/self-play/MonopolyZero) ve bootstrap fazı bu
+pipeline'da yok — §2'de gerekçesiyle reddedildi.
 
 ## 6. Reuse kararı — KARARLAŞTIRILDI ve UYGULANDI
 
@@ -262,41 +271,37 @@ raporlanır:
 ## 8. Başarı kriteri ve gerçekçi beklenti
 
 - **Minimum bar**: mevcut %0'ın istatistiksel olarak anlamlı üzerinde bir
-  head-to-head win rate (§1a).
-- **Hedef**: `asu_value_v1`'i head-to-head geçmek.
+  win rate, Fixed-A/B/C'ye karşı (§1b).
+- **Hedef**: `asu_value_v1`'in 72/100'ünü (Fixed-A/B/C'ye karşı) geçmek.
 - **Stretch, bu planın kapsamı dışında**: `asu_rollout_v1`'i geçmek —
   repoda hiç ölçülmemiş, muhtemelen daha güçlü bir hedef.
-- 5 günlük, çoğunlukla CPU-yerel + Colab-ağır bütçede `asu_value_v1`'i
-  kesin olarak geçmek garanti edilemez; bu risk açıkça kabul ediliyor,
-  gizlenmiyor.
+- 5 günlük, çoğunlukla CPU-yerel + Colab-ağır bütçede, **ve search/lookahead
+  karşı-önlemi olmadan** (§4), `asu_value_v1`'in 72'sini geçmek daha da
+  belirsiz hale geldi — bu risk açıkça kabul ediliyor, gizlenmiyor.
 
 ## 9. Karar durumu
 
-1. §1 Hedef metriği: **(b) baseline-relative** — karara bağlandı.
-2. §2 ASU rolü: **Seçenek B** (opponent + decaying bootstrap) — karara
-   bağlandı, kod üzerinden legal olduğu doğrulandı.
-3. §6 Reuse: **onaylandı ve uygulandı** — `Strategy 3` klasörü kuruldu.
-
-Üç karar da kapandı. Sıradaki adım: §3-§5'teki hyperparametre yeniden
-ayarı ve bootstrap/self-play kodunu `Strategy 3` içinde uyarlamak — bu
-ayrı bir implementasyon adımı, bu dokümanın kapsamı dışında.
+1. §1 Hedef metriği: **(b) baseline-relative** — karara bağlandı, değişmedi.
+2. §2 ASU rolü: **Seçenek A** (sadece opponent koltuğu) — önce yanlışlıkla
+   Seçenek B "legal" denip onaylanmıştı, `monopoly_bench.Trainer`'ın
+   koşulsuz bootstrap'ı fark edilince ve takımın kendi kural mesajıyla
+   (`CLAUDE.md`, "Competition rules") doğrulanınca A'ya düzeltildi.
+3. §6 Reuse: `ASU_FROZEN_TEACHER/` hâlâ kullanılıyor (opponent koltuğu +
+   `evaluate_lineup` ile değerlendirme). `monopoly_bench/` kopyalandı ama
+   Strategy 3 pipeline'ında **kullanılmıyor** — kod referans için duruyor.
 
 ## 10. Uygulama durumu
 
-- **DDQN retuning**: `Strategy 2`'den kopyalanan `colab/PPO_DDQN_Train_Colab.ipynb`
-  zaten §3'teki tam değerlerle geliyordu (`lr=1e-4`,
-  `target-update-freq-steps=2000`, `epsilon-decay=0.9985`) — ek iş gerekmedi.
-- **Strategy 3'e özgü Colab notebook'u**: `colab/Strategy3_Hybrid_Train_Colab.ipynb`
-  yazıldı. Sıra: PPO warm start (`--asu-opponent-probability 0.02` ile ASU
-  opponent rolünde) → `python -m monopoly_bench collect-asu` (ASU teacher
-  bootstrap dataset'i) → `python -m monopoly_bench train` (decaying bootstrap +
-  self-play generations) → `tools/evaluate_vs_fixed.py` (nihai metrik).
-- **`tools/evaluate_vs_fixed.py`**: yeni yazıldı — §1'de kararlaştırılan
-  baseline-relative metriği (`monopoly_bench.arena` ile seat-balanced win rate
-  + Wilson lower bound, Fixed-A/B/C'ye karşı) hesaplıyor. Mekanik olarak
-  yerelde eğitilmemiş bir modelle 4 oyunluk smoke test ile doğrulandı
-  (0/4 win, beklenen — eğitim yok).
-- **Colab'da açma**: notebook henüz sadece yerelde var, fork'a (
-  `Gokturkakman/DeepRL_Monopoly`) push edilmeden Colab'ın clone hücresi
-  `Strategy 3`'ü bulamaz. Push, kullanıcı onayı gerektiren bir git işlemi —
-  bu dokümanın/oturumun kapsamında otomatik yapılmadı.
+- **DDQN retuning**: `colab/PPO_DDQN_Train_Colab.ipynb` zaten §3'teki tam
+  değerlerle geliyordu (`lr=1e-4`, `target-update-freq-steps=2000`,
+  `epsilon-decay=0.9985`).
+- **`colab/Strategy3_Train_Colab.ipynb`**: PPO + DDQN eğitimi
+  (`--asu-opponent-probability 0.02`, opponent koltuğu) → `tools/evaluate_vs_fixed.py`
+  ile Fixed-A/B/C'ye karşı nihai ölçüm. `collect-asu`/`monopoly_bench train`
+  adımları çıkarıldı (§2 düzeltmesi).
+- **`tools/evaluate_vs_fixed.py`**: `ASU_FROZEN_TEACHER.evaluate.evaluate_lineup`
+  üzerine yazıldı — asu_value_v1'in 72/100'ünü **ürettiği kodun aynısı**,
+  `ppo:`/`ddqn:` checkpoint spec'i destekliyor. Eğitilmemiş bir PPO
+  checkpoint'iyle 4 oyunluk smoke test ile mekanik olarak doğrulandı.
+- **Push**: `feature/strategy-3-hybrid` dalı, fork'a (`Gokturkakman/DeepRL_Monopoly`)
+  push edildi. Bu düzeltmeler de aynı dala push edilecek.

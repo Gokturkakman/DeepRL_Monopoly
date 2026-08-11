@@ -2,18 +2,26 @@
 evaluate_vs_fixed.py
 ---------------------
 Strategy 3's decided evaluation metric (PLAN.md §1, "(b) baseline-relative"):
-seat-balanced win rate of a MonopolyZero (monopoly_bench) candidate against
-Fixed-A/B/C, with a Wilson lower bound. This is the number to compare
-against the measured asu_value_v1 baseline of 72/100
-(Strategy 1/REPO_STUDY_NOTES.md, section 1) -- ASU is not seated as an
-opponent here; it never is for this metric (PLAN.md §1).
+seat-balanced win rate of a trained PPO/DDQN checkpoint against Fixed-A/B/C,
+with a Wilson interval. Compare the reported win_rate against the measured
+asu_value_v1 baseline of 72/100 (Strategy 1/REPO_STUDY_NOTES.md §1).
 
-The candidate is loaded through MonopolyZeroNet.load_inference, which
-rejects a ruleset/state/action mismatch outright (CLAUDE.md's checkpoint-
-identity rule) rather than silently loading into the wrong shape.
+Reuses ASU_FROZEN_TEACHER.evaluate.evaluate_lineup -- the exact function that
+produced that 72/100 number -- so the comparison is the same code path, not
+just the same statistic. 25 paired seeds x 4 seats = 100 games matches that
+artifact's methodology.
+
+ASU is never an opponent here (PLAN.md §1: baseline-relative, not
+head-to-head). It is also never a training input for this checkpoint --
+PLAN.md §2 restricts ASU to a training-time opponent seat only
+(--asu-opponent-probability in tools/train_and_save.py); the MonopolyZero/
+monopoly_bench self-play track was dropped because its Trainer bootstraps on
+ASU's chosen actions unconditionally, which the Hard Rules in CLAUDE.md do
+not permit outside the SLM/Gemma track.
 
 Usage:
-    python tools/evaluate_vs_fixed.py --candidate RUN_DIR/champion.pt --games 100
+    python tools/evaluate_vs_fixed.py --checkpoint ppo:artifacts/ppo_plus/ppo_hybrid_2000_v2.pt
+    python tools/evaluate_vs_fixed.py --checkpoint ddqn:artifacts/ddqn_plus/ddqn_hybrid_2000_v2.pt --seeds 25
 """
 
 from __future__ import annotations
@@ -27,67 +35,38 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from monopoly_bench.adapters import FixedAdapter
-from monopoly_bench.arena import balanced_single_seats, play_game, summarize
-from monopoly_bench.config import SearchConfig
-from monopoly_bench.model import MonopolyZeroNet
-from monopoly_game_engine.agents_fixed import FPAgentA, FPAgentB, FPAgentC
-
-
-FIXED_TRIO = (FPAgentA, FPAgentB, FPAgentC)
-
-
-def build_policies(candidate_seat: int, model: MonopolyZeroNet, search: SearchConfig):
-    from monopoly_bench.adapters import SearchAdapter
-
-    policies = {candidate_seat: SearchAdapter(model, search, self_play=False)}
-    other_seats = [seat for seat in range(4) if seat != candidate_seat]
-    for seat, agent_class in zip(other_seats, FIXED_TRIO):
-        policies[seat] = FixedAdapter(agent_class)
-    return policies
+from ASU_FROZEN_TEACHER.evaluate import evaluate_lineup
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--candidate", required=True, help="MonopolyZero champion .pt (save_inference format)")
-    parser.add_argument("--games", type=int, default=100)
-    parser.add_argument("--seed-base", type=int, default=9_100_000, help="Default: BenchmarkConfig.seeds.gate")
-    parser.add_argument("--simulations", type=int, default=None, help="Override SearchConfig.simulations")
-    parser.add_argument("--max-rounds", type=int, default=200)
-    parser.add_argument("--out", default=None, help="Optional path to write the JSON summary")
+    parser.add_argument("--checkpoint", required=True, help="ppo:/path or ddqn:/path")
+    parser.add_argument("--seeds", type=int, default=25, help="Paired seeds; games = seeds * 4 (seat-balanced)")
+    parser.add_argument("--seed-base", type=int, default=0)
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
-    model = MonopolyZeroNet.load_inference(args.candidate)
-    search = SearchConfig() if args.simulations is None else SearchConfig(simulations=args.simulations)
+    seeds = tuple(range(args.seed_base, args.seed_base + args.seeds))
+    result = evaluate_lineup(args.checkpoint, ("fixed-a", "fixed-b", "fixed-c"), seeds=seeds)
 
-    target_seats = balanced_single_seats(args.games)
-    results = []
-    for game_id, seats in enumerate(target_seats):
-        candidate_seat = next(iter(seats))
-        seed = args.seed_base + game_id
-        policies = build_policies(candidate_seat, model, search)
-        results.append(play_game(game_id=game_id, seed=seed, policies=policies, max_rounds=args.max_rounds))
-
-    summary = summarize(results, target_seats)
+    focus_id = result["policy_ids"]["focus"]
+    focus_summary = result["win_rates"][focus_id]
     report = {
-        "opponents": "Fixed-A/B/C (monopoly_game_engine.agents_fixed)",
-        "candidate": str(args.candidate),
+        "checkpoint": args.checkpoint,
+        "opponents": "fixed-a, fixed-b, fixed-c",
         "seat_balanced": True,
-        "games": summary.games,
-        "completed": summary.completed,
-        "wins": summary.wins,
-        "losses": summary.losses,
-        "win_rate": summary.win_rate,
-        "wilson_lower_95": summary.wilson_lower,
-        "illegal_actions": summary.illegal_actions,
-        "crashes": summary.crashes,
-        "search_latency_p95_s": summary.latency_p95_s,
+        "games": focus_summary["games"],
+        "wins": focus_summary["wins"],
+        "win_rate": focus_summary["win_rate"],
+        "wilson_95_interval": focus_summary["wilson_95"],
+        "truncations": result["truncations"],
         "asu_value_v1_reference": "72/100 seat-balanced vs Fixed-A/B/C (Strategy 1/REPO_STUDY_NOTES.md)",
+        "raw": result,
     }
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(json.dumps(report, indent=2, sort_keys=True, default=str))
     if args.out:
         with open(args.out, "w") as f:
-            json.dump(report, f, indent=2, sort_keys=True)
+            json.dump(report, f, indent=2, sort_keys=True, default=str)
     return 0
 
 
