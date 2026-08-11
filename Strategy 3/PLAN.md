@@ -296,7 +296,7 @@ raporlanır:
   değerlerle geliyordu (`lr=1e-4`, `target-update-freq-steps=2000`,
   `epsilon-decay=0.9985`).
 - **`colab/Strategy3_Train_Colab.ipynb`**: PPO + DDQN eğitimi
-  (`--asu-opponent-probability 0.02`, opponent koltuğu) → `tools/evaluate_vs_fixed.py`
+  (`--asu-opponent-probability 0.15`, opponent koltuğu) → `tools/evaluate_vs_fixed.py`
   ile Fixed-A/B/C'ye karşı nihai ölçüm. `collect-asu`/`monopoly_bench train`
   adımları çıkarıldı (§2 düzeltmesi).
 - **`tools/evaluate_vs_fixed.py`**: `ASU_FROZEN_TEACHER.evaluate.evaluate_lineup`
