@@ -145,12 +145,13 @@ def main():
         type=float,
         default=None,
         help=(
-            "DDQN learning rate (default None: DDQNAgent's 1e-5, tuned for the "
-            "paper's 10,000-game run). Diagnosed 2026-08-11: a 1000-game run at "
-            "1e-5 with target_update_freq=500 games (2 syncs total) stayed at 0%% "
-            "win rate despite correctly-signed rewards throughout -- the network "
-            "wasn't absorbing credit fast enough for the run length. Try 1e-4 to "
-            "1e-3 for shorter runs, together with --target-update-freq-steps."
+            "Learning rate for whichever --algo is selected (default None: each "
+            "agent's own default -- DDQNAgent's 1e-5, PPOAgent's 3e-4). For DDQN: "
+            "diagnosed 2026-08-11, a 1000-game run at 1e-5 with "
+            "target_update_freq=500 games (2 syncs total) stayed at 0%% win rate "
+            "despite correctly-signed rewards throughout -- the network wasn't "
+            "absorbing credit fast enough for the run length. Try 1e-4 to 1e-3 for "
+            "shorter DDQN runs, together with --target-update-freq-steps."
         ),
     )
     parser.add_argument(
@@ -188,6 +189,43 @@ def main():
         type=int,
         default=None,
         help="DDQN only: gradient steps over which beta anneals to 1.0 (default None: 100000).",
+    )
+    parser.add_argument(
+        "--ppo-win-loss-bonus",
+        type=float,
+        default=None,
+        help=(
+            "PPO only: terminal win/loss reward (default None: PPOAgent's 1.0). "
+            "DDQN's equivalent is 10.0 ('paper Exp 1'); PPO's was never retuned to "
+            "match. Both algorithms share the same per-decision potential-shaping "
+            "clip (+/-2.0, POTENTIAL_REWARD_LIMIT in train.py) applied at every "
+            "neural decision -- games have been observed with 150-400+ trade "
+            "actions alone, so summed shaping reward over a game can run to the "
+            "hundreds while a 1.0 terminal bonus is comparatively noise. Try 10.0."
+        ),
+    )
+    parser.add_argument(
+        "--ppo-entropy-coef",
+        type=float,
+        default=None,
+        help="PPO only: entropy bonus coefficient (default None: PPOAgent's 0.05).",
+    )
+    parser.add_argument(
+        "--ppo-entropy-coef-end",
+        type=float,
+        default=None,
+        help="PPO only: floor for --ppo-entropy-decay (default None: PPOAgent's 0.01). "
+        "No effect unless --ppo-entropy-decay < 1.0.",
+    )
+    parser.add_argument(
+        "--ppo-entropy-decay",
+        type=float,
+        default=None,
+        help="PPO only: per-game multiplicative decay for the entropy coefficient, "
+        "floored at --ppo-entropy-coef-end (default None: PPOAgent's 1.0, i.e. no "
+        "decay). DDQN has --epsilon-decay for the same explore-to-exploit shift; "
+        "PPO had no equivalent until now, so entropy noise never tapered off even "
+        "late in a short run. Try 0.999 or similar.",
     )
     parser.add_argument(
         "--log-every",
@@ -308,6 +346,17 @@ def main():
     )
 
     if args.algo == "ppo":
+        ppo_kwargs = {}
+        if args.lr is not None:
+            ppo_kwargs["lr"] = args.lr
+        if args.ppo_win_loss_bonus is not None:
+            ppo_kwargs["win_loss_bonus"] = args.ppo_win_loss_bonus
+        if args.ppo_entropy_coef is not None:
+            ppo_kwargs["entropy_coef"] = args.ppo_entropy_coef
+        if args.ppo_entropy_coef_end is not None:
+            ppo_kwargs["entropy_coef_end"] = args.ppo_entropy_coef_end
+        if args.ppo_entropy_decay is not None:
+            ppo_kwargs["entropy_decay"] = args.ppo_entropy_decay
         agent, history = train_ppo(
             hybrid=args.hybrid,
             player_id=0,
@@ -329,6 +378,7 @@ def main():
             self_play_probability=args.self_play_probability,
             self_play_epsilon=args.self_play_epsilon,
             self_play_register_every=args.self_play_register_every,
+            **ppo_kwargs,
         )
     else:
         ddqn_kwargs = {}

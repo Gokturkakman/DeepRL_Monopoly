@@ -143,6 +143,8 @@ class PPOAgent:
         lam: float = 0.95,
         clip_eps: float = 0.2,
         entropy_coef: float = 0.05,
+        entropy_coef_end: float = 0.01,
+        entropy_decay: float = 1.0,
         value_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         n_steps: int = 1024,
@@ -157,7 +159,13 @@ class PPOAgent:
         self.gamma = gamma
         self.lam = lam
         self.clip_eps = clip_eps
+        # entropy_decay defaults to 1.0 (no decay) so existing callers see
+        # unchanged behavior; DDQN has epsilon_decay for the same
+        # explore-to-exploit shift, PPO had no equivalent until now.
         self.entropy_coef = entropy_coef
+        self.entropy_coef_end = entropy_coef_end
+        self.entropy_decay = entropy_decay
+        self._entropy_decayed_for_game = -1
         self.value_coef = value_coef
         self.max_grad_norm = max_grad_norm
         self.n_steps = n_steps
@@ -276,6 +284,18 @@ class PPOAgent:
         """
         if len(self.buffer) == 0:
             return {}
+
+        # Decay entropy_coef at most once per game. games_trained is set by
+        # the caller (train.py) only after run_episode() returns, so every
+        # update() call within the same game -- whether triggered mid-game
+        # by n_steps or by the terminal flush -- still sees the previous
+        # game's games_trained value; guarding on it changing prevents a
+        # long game with a mid-game update from decaying twice.
+        if self.games_trained != self._entropy_decayed_for_game:
+            self.entropy_coef = max(
+                self.entropy_coef_end, self.entropy_coef * self.entropy_decay
+            )
+            self._entropy_decayed_for_game = self.games_trained
 
         # FIX 3: bootstrap value for the end of the rollout
         if last_next_state is not None and not last_done:
@@ -418,6 +438,8 @@ class PPOAgent:
                     "lam": self.lam,
                     "clip_eps": self.clip_eps,
                     "entropy_coef": self.entropy_coef,
+                    "entropy_coef_end": self.entropy_coef_end,
+                    "entropy_decay": self.entropy_decay,
                     "value_coef": self.value_coef,
                     "max_grad_norm": self.max_grad_norm,
                     "n_steps": self.n_steps,

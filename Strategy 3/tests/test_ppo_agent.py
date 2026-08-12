@@ -18,9 +18,10 @@ from monopoly_game_engine.agent_ppo import (  # noqa: E402
     PPOAgent,
     fixed_accept_trade_decision,
 )
-from monopoly_game_engine.actions import ActionType  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
 from monopoly_game_engine.agents_fixed import TheGambler  # noqa: E402
 from monopoly_game_engine.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
+from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 from monopoly_game_engine.train import run_episode  # noqa: E402
 
 
@@ -165,6 +166,54 @@ class PPOAgentTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Incompatible PPO checkpoint"):
                 PPOAgent(0, hybrid=False, device="cpu").load(str(path))
+
+    def test_entropy_decays_once_per_game_and_floors(self) -> None:
+        agent = PPOAgent(
+            player_id=0,
+            hybrid=True,
+            device="cpu",
+            n_epochs=1,
+            batch_size=2,
+            entropy_coef=0.05,
+            entropy_coef_end=0.01,
+            entropy_decay=0.9,
+        )
+
+        def store_one_transition() -> None:
+            state = np.zeros(STATE_DIM, dtype=np.float32)
+            mask = torch.zeros(ACTION_SPACE_SIZE, dtype=torch.bool)
+            mask[0] = True
+            agent.buffer.store(state, 0, 0.0, 0.1, 0.0, True, mask)
+
+        # Two update() calls within the same game (games_trained unchanged,
+        # as train.py only advances it after run_episode() returns) must
+        # decay entropy_coef only once.
+        store_one_transition()
+        agent.update()
+        after_first = agent.entropy_coef
+        self.assertAlmostEqual(after_first, 0.05 * 0.9)
+
+        store_one_transition()
+        agent.update()
+        self.assertAlmostEqual(agent.entropy_coef, after_first)
+
+        # Advancing games_trained (as train.py does between games) allows
+        # the next update() to decay again.
+        agent.games_trained = 1
+        store_one_transition()
+        agent.update()
+        self.assertAlmostEqual(agent.entropy_coef, 0.05 * 0.9 * 0.9)
+
+        # Floors at entropy_coef_end rather than decaying indefinitely.
+        for game in range(2, 50):
+            agent.games_trained = game
+            store_one_transition()
+            agent.update()
+        self.assertAlmostEqual(agent.entropy_coef, 0.01)
+
+    def test_entropy_decay_defaults_to_no_op(self) -> None:
+        agent = PPOAgent(player_id=0, hybrid=True, device="cpu")
+        self.assertEqual(agent.entropy_decay, 1.0)
 
     def test_legacy_checkpoint_has_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
