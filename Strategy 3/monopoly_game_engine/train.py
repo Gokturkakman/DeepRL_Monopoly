@@ -376,6 +376,7 @@ def train(
     opponent_epsilon: float = DEFAULT_OPPONENT_EPSILON,
     opponent_threshold_jitter: float = DEFAULT_OPPONENT_THRESHOLD_JITTER,
     held_out_eval_games: int = 20,
+    real_eval_games: int = 20,
     asu_factory=None,
     asu_probability: float = 0.0,
     self_play_pool=None,
@@ -519,6 +520,28 @@ def train(
                 history["held_out_win_rate"].append(held_out["mean_win_rate"])
                 held_out_str = f"  HeldOut%: {held_out['mean_win_rate']:5.1f}%"
 
+            # The scored metric (PLAN.md §1): deterministic Fixed-A/B/C,
+            # evaluate()'s own defaults, no jitter/epsilon -- the same
+            # opponents and settings tools/evaluate_vs_fixed.py uses at the
+            # end of a run, just without its seat-balancing/Wilson wrapper.
+            # Win% above is the noisy in-training-pool number (5 jittered
+            # personalities, possibly ASU/self-play) and can look far
+            # stronger than this without meaning anything about real play.
+            real_str = ""
+            if real_eval_games > 0:
+                saved_epsilon = getattr(learning_agent, "epsilon", None)
+                real_eval = evaluate(
+                    learning_agent,
+                    is_ppo,
+                    n_games=real_eval_games,
+                    n_runs=1,
+                    seed=absolute_game,
+                )
+                if saved_epsilon is not None:
+                    learning_agent.epsilon = saved_epsilon
+                history["real_fixed_abc_win_rate"].append(real_eval["mean_win_rate"])
+                real_str = f"  FixedABC%: {real_eval['mean_win_rate']:5.1f}%"
+
             eps_str = (
                 f"  ε={learning_agent.epsilon:.3f}"
                 if hasattr(learning_agent, "epsilon")
@@ -526,7 +549,7 @@ def train(
             )
             print(
                 f"  Game {absolute_game:5d} | "
-                f"Win%: {win_rate:5.1f}%{held_out_str}{eps_str} | "
+                f"Win%: {win_rate:5.1f}%{held_out_str}{real_str}{eps_str} | "
                 f"Props: {avg_props:.1f} | "
                 f"Trades init/acc/dec: "
                 f"{avg_trades_init:.1f}/{avg_trades_acc:.1f}/{avg_trades_dec:.1f}"

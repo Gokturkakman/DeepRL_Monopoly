@@ -224,6 +224,15 @@ def main():
         help="Games vs held-out TheRailBaron logged every log-every games (default: 20; 0 disables)",
     )
     parser.add_argument(
+        "--real-eval-games",
+        type=int,
+        default=20,
+        help="Deterministic Fixed-A/B/C games (the scored metric, no jitter) logged every "
+        "log-every games as 'FixedABC%%' (default: 20; 0 disables). The in-training 'Win%%' "
+        "number is against a noisy 5-personality pool plus possibly ASU/self-play and can "
+        "look much stronger than this without meaning anything about real play.",
+    )
+    parser.add_argument(
         "--asu-opponent-probability",
         type=float,
         default=0.0,
@@ -313,6 +322,7 @@ def main():
             opponent_epsilon=args.opponent_epsilon,
             opponent_threshold_jitter=args.opponent_threshold_jitter,
             held_out_eval_games=args.held_out_eval_games,
+            real_eval_games=args.real_eval_games,
             asu_factory=asu_factory,
             asu_probability=args.asu_opponent_probability,
             self_play_pool=self_play_pool,
@@ -352,6 +362,7 @@ def main():
             opponent_epsilon=args.opponent_epsilon,
             opponent_threshold_jitter=args.opponent_threshold_jitter,
             held_out_eval_games=args.held_out_eval_games,
+            real_eval_games=args.real_eval_games,
             asu_factory=asu_factory,
             asu_probability=args.asu_opponent_probability,
             self_play_pool=self_play_pool,
