@@ -63,14 +63,20 @@ class ASUOpponent:
         if self.decision_timeout > 0:
             signal.signal(signal.SIGALRM, _raise_timeout)
             signal.setitimer(signal.ITIMER_REAL, self.decision_timeout)
+        # except must wrap the finally, not sit beside it: if the alarm fires
+        # exactly as self._asu.choose_action returns -- after the try's body
+        # succeeded but before the finally's own setitimer(...,0) call runs --
+        # _DecisionTimeout is raised from inside the finally, which a sibling
+        # except can't catch. Observed in practice: crashed a live Colab run.
         try:
-            with preserve_global_rng():
-                return self._asu.choose_action(env)
+            try:
+                with preserve_global_rng():
+                    return self._asu.choose_action(env)
+            finally:
+                if self.decision_timeout > 0:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
         except _DecisionTimeout:
             return self._rng.choice(allowed)
-        finally:
-            if self.decision_timeout > 0:
-                signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 __all__ = ["ASUOpponent"]
